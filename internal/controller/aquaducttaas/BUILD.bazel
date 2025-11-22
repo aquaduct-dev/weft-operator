@@ -1,0 +1,15 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "aquaducttaas",
+    srcs = ["reconciler.go"],
+    importpath = "aquaduct.dev/weft-operator/internal/controller/aquaducttaas",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//api/v1alpha1",
+        "@io_k8s_apimachinery//pkg/runtime",
+        "@io_k8s_sigs_controller_runtime//:controller-runtime",
+        "@io_k8s_sigs_controller_runtime//pkg/client",
+        "@io_k8s_sigs_controller_runtime//pkg/log",
+    ],
+)

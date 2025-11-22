@@ -1,0 +1,101 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "weft-operator.fullname" . }}
+  labels:
+    {{- include "weft-operator.labels" . | nindent 4 }}
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  - services
+  - pods
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - gatewayclasses
+  - gateways
+  - httproutes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - gateways/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - weft.aquaduct.dev
+  resources:
+  - aquaducttaases
+  - weftgateways
+  - weftservers
+  - wefttunnels
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - weft.aquaduct.dev
+  resources:
+  - aquaducttaases/finalizers
+  - weftgateways/finalizers
+  - weftservers/finalizers
+  - wefttunnels/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - weft.aquaduct.dev
+  resources:
+  - aquaducttaases/status
+  - weftgateways/status
+  - weftservers/status
+  - wefttunnels/status
+  verbs:
+  - get
+  - patch
+  - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "weft-operator.fullname" . }}
+  labels:
+    {{- include "weft-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "weft-operator.fullname" . }}
+subjects:
+- kind: ServiceAccount
+  name: {{ include "weft-operator.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace }}

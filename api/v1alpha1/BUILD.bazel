@@ -1,0 +1,70 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/controller-gen:defs.bzl", "controller_gen")
+
+controller_gen(
+    name = "deepcopy",
+    srcs = glob(
+        ["*.go"],
+        exclude = ["zz_generated.deepcopy.go"],
+    ) + [
+        "//:go.mod",
+        "//:go.sum",
+    ],
+    outs = ["zz_generated.deepcopy.go"],
+    args = [
+        "object:headerFile=/dev/null",
+        "paths=./api/v1alpha1",
+    ],
+)
+
+controller_gen(
+    name = "crds",
+    srcs = glob(
+        ["*.go"],
+        exclude = ["zz_generated.deepcopy.go"],
+    ) + [
+        "//:go.mod",
+        "//:go.sum",
+    ],
+    outs = [
+        "weft.aquaduct.dev_aquaducttaases.yaml",
+        "weft.aquaduct.dev_weftgateways.yaml",
+        "weft.aquaduct.dev_weftservers.yaml",
+        "weft.aquaduct.dev_wefttunnels.yaml",
+    ],
+    args = [
+        "crd",
+        "paths=./api/v1alpha1",
+        "output:crd:dir=api/v1alpha1",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "api_types",
+    srcs = glob(
+        ["*.go"],
+        exclude = ["zz_generated.deepcopy.go"],
+    ),
+    visibility = ["//visibility:public"],
+)
+
+go_library(
+    name = "v1alpha1",
+    srcs = [
+        "aquaducttaas_types.go",
+        "groupversion_info.go",
+        "weftgateway_types.go",
+        "weftserver_types.go",
+        "wefttunnel_types.go",
+        "zz_generated.deepcopy.go",
+    ],
+    importpath = "aquaduct.dev/weft-operator/api/v1alpha1",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
+        "@io_k8s_apimachinery//pkg/runtime",
+        "@io_k8s_apimachinery//pkg/runtime/schema",
+        "@io_k8s_sigs_controller_runtime//pkg/scheme",
+    ],
+)

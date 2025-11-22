@@ -1,0 +1,23 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("//tools/controller-gen:defs.bzl", "controller_gen")
+
+controller_gen(
+    name = "crds",
+    srcs = [
+        "//api/v1alpha1:api_types",
+        "//:go.mod",
+        "//:go.sum",
+    ],
+    outs = [
+        "weft.aquaduct.dev_aquaducttaases.yaml",
+        "weft.aquaduct.dev_weftgateways.yaml",
+        "weft.aquaduct.dev_weftservers.yaml",
+        "weft.aquaduct.dev_wefttunnels.yaml",
+    ],
+    args = [
+        "crd",
+        "paths=./api/v1alpha1",
+        "output:crd:dir=$(RULEDIR)",
+    ],
+    visibility = ["//visibility:public"],
+)

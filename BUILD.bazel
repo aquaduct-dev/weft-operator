@@ -1,0 +1,9 @@
+load("@gazelle//:def.bzl", "gazelle")
+
+# gazelle:prefix aquaduct.dev/weft-operator
+gazelle(name = "gazelle")
+
+exports_files([
+    "go.mod",
+    "go.sum",
+])

@@ -1,0 +1,12 @@
+{
+    "mcpServers": {
+        "gopls":{
+            "command": "go",
+            "args": ["run", "golang.org/x/tools/gopls@latest", "mcp"],
+            "trust": true,
+            "env":{
+                "GOPACKAGESDRIVER": "./tools/gopls/gopackagesdriver.sh"
+            }
+        }
+    }
+}

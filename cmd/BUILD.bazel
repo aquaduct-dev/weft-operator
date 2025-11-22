@@ -1,0 +1,49 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load", "oci_push")
+load("@rules_pkg//:pkg.bzl", "pkg_tar")
+
+go_library(
+    name = "cmd_lib",
+    srcs = ["main.go"],
+    importpath = "aquaduct.dev/weft-operator/cmd",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//api/v1alpha1",
+        "//internal/controller/aquaducttaas",
+        "//internal/controller/weftgateway",
+        "//internal/controller/weftserver:reconciler",
+        "//internal/controller/wefttunnel",
+        "@io_k8s_apimachinery//pkg/runtime",
+        "@io_k8s_apimachinery//pkg/util/runtime",
+        "@io_k8s_client_go//kubernetes/scheme",
+        "@io_k8s_client_go//plugin/pkg/client/auth",
+        "@io_k8s_sigs_controller_runtime//:controller-runtime",
+        "@io_k8s_sigs_controller_runtime//pkg/healthz",
+        "@io_k8s_sigs_controller_runtime//pkg/log/zap",
+        "@io_k8s_sigs_controller_runtime//pkg/metrics/server",
+    ],
+)
+
+go_binary(
+    name = "cmd",
+    embed = [":cmd_lib"],
+    visibility = ["//visibility:public"],
+)
+
+pkg_tar(
+    name = "layer",
+    srcs = [":cmd"],
+)
+
+oci_image(
+    name = "weft_operator_image",
+    base = "@alpine",
+    entrypoint = ["/cmd"],
+    tars = [":layer"],
+)
+oci_push(
+    name = "weft_operator_image_push",
+    image = ":weft_operator_image",
+    repository = "ghcr.io/aquaduct-dev/weft-operator",
+    tags = ["latest"],
+)

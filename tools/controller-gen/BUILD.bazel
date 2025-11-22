@@ -1,0 +1,6 @@
+package(default_visibility = ["//visibility:public"])
+
+alias(
+    name = "controller-gen",
+    actual = "@io_k8s_sigs_controller_tools//cmd/controller-gen",
+)

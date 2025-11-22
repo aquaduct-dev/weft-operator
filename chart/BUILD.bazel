@@ -1,0 +1,15 @@
+load("@rules_helm//helm:defs.bzl", "helm_chart")
+
+helm_chart(
+    name = "weft-operator",
+    chart = "Chart.yaml",
+    values = "values.yaml",
+    crds = ["//chart/templates/crds:crds"],
+    install_name = "weft-operator",
+    install_opts = [
+        "--namespace", "weft-system",
+        "--create-namespace",
+        "--wait",
+    ],
+    visibility = ["//visibility:public"],
+)

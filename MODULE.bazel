@@ -1,0 +1,85 @@
+module(
+    name = "aquaduct_weft",
+    version = "2025.11.14",
+)
+
+# Add rules_oci as a bzlmod dependency so container rules can be used without a WORKSPACE file.
+# Version may be adjusted if you prefer a different release.
+bazel_dep(
+    name = "rules_oci",
+    version = "2.2.6",
+)
+bazel_dep(name = "tar.bzl", version = "0.6.0")
+bazel_dep(
+    name = "rules_go",
+    version = "0.59.0",
+)
+bazel_dep(
+    name = "gazelle",
+    version = "0.47.0",
+)
+bazel_dep(
+    name = "rules_pkg",
+    version = "1.1.0",
+)
+bazel_dep(name = "rules_shell", version = "0.6.1")
+bazel_dep(
+    name = "rules_helm",
+    version = "0.11.0",
+)
+
+go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
+go_sdk.from_file(go_mod = "//:go.mod")
+go_sdk.download(
+    name = "go_sdk",
+    version = "1.25.4",
+)
+use_repo(go_sdk, "go_sdk")
+
+register_toolchains("@go_sdk//:all")
+
+go_deps = use_extension("@gazelle//:extensions.bzl", "go_deps")
+go_deps.from_file(go_mod = "//:go.mod")
+go_deps.gazelle_override(
+    build_file_generation = "clean",
+    path = "github.com/aquaduct-dev/weft",
+)
+
+# All *direct* Go dependencies of the module have to be listed explicitly.
+use_repo(
+    go_deps,
+    "com_github_aquaduct_dev_weft",
+    "com_github_fatih_color",
+    "com_github_gobuffalo_flect",
+    "com_github_onsi_ginkgo_v2",
+    "com_github_onsi_gomega",
+    "com_github_spf13_cobra",
+    "in_gopkg_yaml_v2",
+    "io_k8s_api",
+    "io_k8s_apimachinery",
+    "io_k8s_client_go",
+    "io_k8s_code_generator",
+    "io_k8s_sigs_controller_runtime",
+    "io_k8s_sigs_controller_tools",
+    "io_k8s_sigs_gateway_api",
+    "org_golang_x_tools",
+)
+
+oci = use_extension("@rules_oci//oci:extensions.bzl", "oci")
+
+# A multi-arch base image with variants, note that it won't work with just "linux/arm64"
+oci.pull(
+    name = "alpine",
+    digest = "sha256:4b7ce07002c69e8f3d704a9c5d6fd3053be500b7f1c69fc0d80990c2ad8dd412",
+    image = "docker.io/library/alpine",
+    platforms = [
+        "linux/amd64",
+        "linux/arm64/v8",
+    ],
+)
+use_repo(
+    oci,
+    "alpine",
+    "alpine_linux_amd64",
+    "alpine_linux_arm64_v8",
+)
