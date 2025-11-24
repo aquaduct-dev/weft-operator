@@ -21,12 +21,14 @@ go_library(
         "@io_k8s_sigs_controller_runtime//pkg/healthz",
         "@io_k8s_sigs_controller_runtime//pkg/log/zap",
         "@io_k8s_sigs_controller_runtime//pkg/metrics/server",
+        "@io_k8s_sigs_gateway_api//apis/v1:apis",
     ],
 )
 
 go_binary(
     name = "cmd",
     embed = [":cmd_lib"],
+    pure = "on",
     visibility = ["//visibility:public"],
 )
 
@@ -41,9 +43,12 @@ oci_image(
     entrypoint = ["/cmd"],
     tars = [":layer"],
 )
+
 oci_push(
     name = "weft_operator_image_push",
     image = ":weft_operator_image",
     repository = "ghcr.io/aquaduct-dev/weft-operator",
-    tags = ["latest"],
+    remote_tags = ["latest"],
+    visibility = ["//chart:__subpackages__"],
 )
+                                                                                                      

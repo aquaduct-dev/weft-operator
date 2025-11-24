@@ -1,15 +1,22 @@
-load("@rules_helm//helm:defs.bzl", "helm_chart")
-
-helm_chart(
-    name = "weft-operator",
+load("@rules_helm//helm:defs.bzl", "helm_package", "helm_upgrade")
+helm_package(
+    name = "weft_operator",
     chart = "Chart.yaml",
     values = "values.yaml",
-    crds = ["//chart/templates/crds:crds"],
-    install_name = "weft-operator",
-    install_opts = [
-        "--namespace", "weft-system",
-        "--create-namespace",
-        "--wait",
+    templates = glob(["templates/**"]),
+    crds = [
+        "//chart/templates/crds:crds",
+        "//chart/templates/crds:gateway_crds",
     ],
     visibility = ["//visibility:public"],
+)
+
+helm_upgrade(
+    name = "weft_operator_release",
+    install_name = "weft-operator",
+    package = ":weft_operator",
+    opts = [
+        "--namespace=weft-system",
+        "--install",
+    ]
 )

@@ -2,18 +2,23 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "reconciler",
-    srcs = ["reconciler.go"],
+    srcs = [
+        "node_prober.go",
+        "reconciler.go",
+    ],
     importpath = "aquaduct.dev/weft-operator/internal/controller/weftserver",
     visibility = ["//visibility:public"],
     deps = [
         "//api/v1alpha1",
         "@com_github_aquaduct_dev_weft//src/client",
         "@io_k8s_api//apps/v1:apps",
+        "@io_k8s_api//batch/v1:batch",
         "@io_k8s_api//core/v1:core",
         "@io_k8s_apimachinery//pkg/api/errors",
         "@io_k8s_apimachinery//pkg/api/meta",
         "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
         "@io_k8s_apimachinery//pkg/runtime",
+        "@io_k8s_apimachinery//pkg/types",
         "@io_k8s_apimachinery//pkg/util/intstr",
         "@io_k8s_sigs_controller_runtime//:controller-runtime",
         "@io_k8s_sigs_controller_runtime//pkg/client",

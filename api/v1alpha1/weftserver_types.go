@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -46,6 +47,9 @@ type WeftServerSpec struct {
 
 	// UsageReportingURL specifies the URL for usage reporting.
 	UsageReportingURL string `json:"usageReportingURL,omitempty"`
+
+	// CloudflareTokenSecretRef specifies the secret containing the Cloudflare API token.
+	CloudflareTokenSecretRef *corev1.SecretKeySelector `json:"cloudflareTokenSecretRef,omitempty"`
 }
 
 // TunnelStatus represents the status and metrics of a tunnel.

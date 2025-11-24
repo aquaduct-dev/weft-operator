@@ -37,6 +37,7 @@ import (
 	"aquaduct.dev/weft-operator/internal/controller/weftgateway"
 	"aquaduct.dev/weft-operator/internal/controller/weftserver"
 	"aquaduct.dev/weft-operator/internal/controller/wefttunnel"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	//+kubebuilder:scaffold:imports
 )
 
@@ -49,6 +50,7 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(weftv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(gatewayv1.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
 }
 

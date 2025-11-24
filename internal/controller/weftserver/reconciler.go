@@ -151,6 +151,17 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		cmdArgs = append(cmdArgs, fmt.Sprintf("--usage-reporting-url=%s", weftServer.Spec.UsageReportingURL))
 	}
 
+	var envVars []corev1.EnvVar
+	if weftServer.Spec.CloudflareTokenSecretRef != nil {
+		cmdArgs = append(cmdArgs, "--cloudflare-token=$(CLOUDFLARE_TOKEN)")
+		envVars = append(envVars, corev1.EnvVar{
+			Name: "CLOUDFLARE_TOKEN",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: weftServer.Spec.CloudflareTokenSecretRef,
+			},
+		})
+	}
+
 	// Reconcile Deployment
 	op, err := controllerutil.CreateOrUpdate(ctx, r.Client, dep, func() error {
 		dep.Spec.Selector = &metav1.LabelSelector{
@@ -164,6 +175,7 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 				Name:    "server",
 				Image:   "ghcr.io/aquaduct-dev/weft:latest", // TODO: Versioning
 				Command: cmdArgs,
+				Env:     envVars,
 			},
 		}
 		return controllerutil.SetControllerReference(&weftServer, dep, r.Scheme)
@@ -288,6 +300,10 @@ func int32Ptr(i int32) *int32 {
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *WeftServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := mgr.Add(&NodeProber{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}); err != nil {
+		return err
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&weftv1alpha1.WeftServer{}).
 		Complete(r)

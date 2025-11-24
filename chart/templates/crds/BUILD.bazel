@@ -21,3 +21,9 @@ controller_gen(
     ],
     visibility = ["//visibility:public"],
 )
+
+filegroup(
+    name = "gateway_crds",
+    srcs = ["gateway-api.yaml"],
+    visibility = ["//visibility:public"],
+)
