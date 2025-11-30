@@ -162,15 +162,15 @@ func (r *WeftTunnelReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			dep.Spec.Template.Spec.HostNetwork = true
 			dep.Spec.Template.Spec.Containers = []corev1.Container{
 				{
-					Name:    "tunnel",
-					Image:   "ghcr.io/aquaduct-dev/weft:latest", // TODO: Versioning
-					Command: cmdArgs,
+					Name:            "tunnel",
+					Image:           "ghcr.io/aquaduct-dev/weft:latest", // TODO: Versioning
+					Command:         cmdArgs,
 					ImagePullPolicy: corev1.PullAlways,
 				},
 			}
-			err := controllerutil.SetControllerReference(&weftTunnel, dep, r.Scheme)
+			err := controllerutil.SetOwnerReference(&weftTunnel, dep, r.Scheme)
 			if err != nil {
-				log.Error(err, "SetControllerReference failed")
+				log.Error(err, "SetOwnerReference failed")
 				return err
 			}
 			return nil
