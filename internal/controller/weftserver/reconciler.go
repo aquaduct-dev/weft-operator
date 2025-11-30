@@ -23,6 +23,8 @@ import (
 	"strconv"
 	"strings"
 
+	"k8s.io/client-go/kubernetes"
+
 	"k8s.io/apimachinery/pkg/api/meta"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -58,6 +60,7 @@ type WeftServerReconciler struct {
 	client.Client
 	Scheme        *runtime.Scheme
 	ClientFactory WeftClientFactory
+	Clientset     kubernetes.Interface
 }
 
 //+kubebuilder:rbac:groups=weft.aquaduct.dev,resources=weftservers,verbs=get;list;watch;create;update;patch;delete
@@ -121,6 +124,28 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		log.Error(err, "Failed to parse ConnectionString, using default port 8080")
 	}
 
+	// If the server is internal (auto-created), we check if we can bind to the specific IP
+	// The user requested: "read the node to see what address it has in Kubernetes. If the two are the same, --bind-ip should be set to the address. otherwise it should be set to 0.0.0.0"
+	if weftServer.Spec.Location == weftv1alpha1.WeftServerLocationInternal {
+		shouldBindZero := true
+		if nodeName, ok := weftServer.Labels["weft.aquaduct.dev/node"]; ok {
+			var node corev1.Node
+			if err := r.Get(ctx, client.ObjectKey{Name: nodeName}, &node); err == nil {
+				for _, addr := range node.Status.Addresses {
+					if addr.Address == bindIP {
+						shouldBindZero = false
+						break
+					}
+				}
+			} else {
+				log.Error(err, "Failed to get Node for WeftServer", "node", nodeName)
+			}
+		}
+		if shouldBindZero {
+			bindIP = "0.0.0.0"
+		}
+	}
+
 	// Construct command arguments
 	cmdArgs := []string{"weft", "server"}
 	if connectionSecret != "" {
@@ -170,10 +195,11 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 				dep.Spec.Template.Spec.HostNetwork = true
 				dep.Spec.Template.Spec.Containers = []corev1.Container{
 					{
-						Name:    "server",
-						Image:   "ghcr.io/aquaduct-dev/weft:latest", // TODO: Versioning
-						Command: cmdArgs,
-						Env:     envVars,
+						Name:            "server",
+						Image:           "ghcr.io/aquaduct-dev/weft:latest", // TODO: Versioning
+						Command:         cmdArgs,
+						Env:             envVars,
+						ImagePullPolicy: corev1.PullAlways,
 					},
 				}
 				return controllerutil.SetOwnerReference(&weftServer, dep, r.Scheme)
@@ -190,10 +216,11 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 				dep.Spec.Template.Spec.HostNetwork = true
 				dep.Spec.Template.Spec.Containers = []corev1.Container{
 					{
-						Name:    "server",
-						Image:   "ghcr.io/aquaduct-dev/weft:latest", // TODO: Versioning
-						Command: cmdArgs,
-						Env:     envVars,
+						Name:            "server",
+						Image:           "ghcr.io/aquaduct-dev/weft:latest", // TODO: Versioning
+						Command:         cmdArgs,
+						Env:             envVars,
+						ImagePullPolicy: corev1.PullAlways,
 					},
 				}
 				return controllerutil.SetOwnerReference(&weftServer, dep, r.Scheme)
@@ -380,7 +407,7 @@ func int32Ptr(i int32) *int32 {
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *WeftServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	if err := mgr.Add(&NodeProber{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}); err != nil {
+	if err := mgr.Add(&NodeProber{Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Clientset: r.Clientset}); err != nil {
 		return err
 	}
 

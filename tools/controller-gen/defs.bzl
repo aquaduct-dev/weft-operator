@@ -39,6 +39,7 @@ def _controller_gen_impl(ctx):
             export PATH=$PWD/{go_bin_dir}:$PATH
             
             # Run controller-gen
+            echo {tool} "$@"
             {tool} "$@"
             RESULT=$?
             
@@ -100,7 +101,7 @@ def controller_gen(name, srcs,
                    rbac_outs = [],
                    crd_outs = [],
                    webhook_outs = [],
-                   args = [],
+                   paths = [],
                    deepcopy_args = ["object:headerFile=/dev/null"],
                    rbac_args = ["rbac:roleName=manager-role"],
                    crd_args = ["crd"],
@@ -108,23 +109,12 @@ def controller_gen(name, srcs,
                    **kwargs):
     
     # Calculate paths arg
-    paths_arg = []
-    has_paths = False
-    for arg in args:
-        if arg.startswith("paths="):
-            has_paths = True
-            paths_arg.append(arg)
-            break
+    paths_arg = ["paths={"+",".join(paths)+"}"]
+    has_paths = len(paths) > 0
     
     if not has_paths:
         paths_arg = ["paths=./" + native.package_name()]
         
-    # Filter out paths from args if it was there (to avoid duplication if we appended it)
-    # But actually we want to pass it if the user provided it.
-    # common_args are args provided by user that are NOT paths (if we handled paths separately)
-    # But simplicity: just use args as provided by user, but ensure paths is there.
-    
-    user_args_without_paths = [a for a in args if not a.startswith("paths=")]
     final_paths_arg = paths_arg # This is either user's paths or default paths
     
     # Helper to create rule
@@ -146,7 +136,7 @@ def controller_gen(name, srcs,
             name = name + "." + suffix,
             srcs = srcs,
             outs = outs,
-            args = specific_args + final_paths_arg + user_args_without_paths + extra_args,
+            args = specific_args + final_paths_arg + extra_args,
             **kwargs
         )
 

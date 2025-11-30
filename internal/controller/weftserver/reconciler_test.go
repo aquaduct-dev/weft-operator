@@ -85,7 +85,7 @@ var _ = Describe("WeftServer Controller", func() {
 			Expect(dep.Spec.Template.Spec.Containers[0].Image).To(Equal("ghcr.io/aquaduct-dev/weft:latest"))
 			Expect(dep.Spec.Template.Spec.Containers[0].Command).To(ContainElement("weft"))
 			Expect(dep.Spec.Template.Spec.Containers[0].Command).To(ContainElement("server"))
-			Expect(dep.Spec.Template.Spec.Containers[0].Command).To(ContainElement("--bind-ip=localhost"))
+			Expect(dep.Spec.Template.Spec.Containers[0].Command).To(ContainElement("--bind-ip=0.0.0.0"))
 
 			By("Checking Service")
 			svc := &corev1.Service{}
@@ -104,6 +104,92 @@ var _ = Describe("WeftServer Controller", func() {
 				return len(updatedWs.Status.Tunnels)
 			}, timeout, interval).Should(Equal(1))
 			Expect(updatedWs.Status.Tunnels[0].Tx).To(Equal(uint64(100)))
+		})
+
+		It("Should bind to specific IP if it matches Node IP", func(ctx context.Context) {
+			By("Creating a Node")
+			node := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-node-1"},
+				Status: corev1.NodeStatus{
+					Addresses: []corev1.NodeAddress{
+						{Type: corev1.NodeInternalIP, Address: "10.0.0.1"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, node)).To(Succeed())
+
+			By("Creating a WeftServer linked to the Node")
+			ws := &weftv1alpha1.WeftServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-server-node-match",
+					Namespace: "default",
+					Labels:    map[string]string{"weft.aquaduct.dev/node": "test-node-1"},
+				},
+				Spec: weftv1alpha1.WeftServerSpec{
+					Location:         weftv1alpha1.WeftServerLocationInternal,
+					ConnectionString: "http://10.0.0.1:8081",
+				},
+			}
+			Expect(k8sClient.Create(ctx, ws)).To(Succeed())
+
+			By("Reconciling")
+			r := &weftserver.WeftServerReconciler{
+				Client:        k8sClient,
+				Scheme:        k8sClient.Scheme(),
+				ClientFactory: func(url, tunnelName string) (weftserver.WeftClient, error) { return &mockClient{}, nil },
+			}
+			_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "test-server-node-match", Namespace: "default"}})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Checking Deployment uses specific IP")
+			dep := &appsv1.Deployment{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{Name: "test-server-node-match-server", Namespace: "default"}, dep)
+			}, timeout, interval).Should(Succeed())
+			Expect(dep.Spec.Template.Spec.Containers[0].Command).To(ContainElement("--bind-ip=10.0.0.1"))
+		})
+
+		It("Should bind to 0.0.0.0 if IP does not match Node IP", func(ctx context.Context) {
+			By("Creating a Node")
+			node := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-node-2"},
+				Status: corev1.NodeStatus{
+					Addresses: []corev1.NodeAddress{
+						{Type: corev1.NodeInternalIP, Address: "10.0.0.2"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, node)).To(Succeed())
+
+			By("Creating a WeftServer linked to the Node with DIFFERENT IP")
+			ws := &weftv1alpha1.WeftServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-server-node-mismatch",
+					Namespace: "default",
+					Labels:    map[string]string{"weft.aquaduct.dev/node": "test-node-2"},
+				},
+				Spec: weftv1alpha1.WeftServerSpec{
+					Location:         weftv1alpha1.WeftServerLocationInternal,
+					ConnectionString: "http://1.2.3.4:8081", // Public IP differing from Node IP
+				},
+			}
+			Expect(k8sClient.Create(ctx, ws)).To(Succeed())
+
+			By("Reconciling")
+			r := &weftserver.WeftServerReconciler{
+				Client:        k8sClient,
+				Scheme:        k8sClient.Scheme(),
+				ClientFactory: func(url, tunnelName string) (weftserver.WeftClient, error) { return &mockClient{}, nil },
+			}
+			_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "test-server-node-mismatch", Namespace: "default"}})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Checking Deployment uses 0.0.0.0")
+			dep := &appsv1.Deployment{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{Name: "test-server-node-mismatch-server", Namespace: "default"}, dep)
+			}, timeout, interval).Should(Succeed())
+			Expect(dep.Spec.Template.Spec.Containers[0].Command).To(ContainElement("--bind-ip=0.0.0.0"))
 		})
 
 		It("Should cleanup resources for External location", func(ctx context.Context) {

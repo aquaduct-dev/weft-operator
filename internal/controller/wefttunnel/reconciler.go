@@ -165,6 +165,7 @@ func (r *WeftTunnelReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 					Name:    "tunnel",
 					Image:   "ghcr.io/aquaduct-dev/weft:latest", // TODO: Versioning
 					Command: cmdArgs,
+					ImagePullPolicy: corev1.PullAlways,
 				},
 			}
 			err := controllerutil.SetControllerReference(&weftTunnel, dep, r.Scheme)

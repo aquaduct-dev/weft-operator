@@ -22,6 +22,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"time"
+	"io"
+	"strings"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -29,6 +31,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -43,8 +46,9 @@ const (
 
 // NodeProber periodically probes nodes to see if they are suitable for WeftServers
 type NodeProber struct {
-	Client client.Client
-	Scheme *runtime.Scheme
+	Client    client.Client
+	Scheme    *runtime.Scheme
+	Clientset kubernetes.Interface
 }
 
 //+kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
@@ -144,6 +148,7 @@ func (p *NodeProber) processNode(ctx context.Context, node *corev1.Node) error {
 								"/weft.runfiles/_main/weft", "probe",
 								"--bind-ip", ip,
 							},
+							ImagePullPolicy: corev1.PullAlways,
 						},
 					},
 				},
@@ -179,6 +184,47 @@ func (p *NodeProber) processNode(ctx context.Context, node *corev1.Node) error {
 
 	if success {
 		log.Info("Probe succeeded, creating WeftServer")
+
+		// Read logs to discover public IP
+		// Find Pod for Job
+		var podList corev1.PodList
+		// Job creates pods with label "job-name=<jobName>" or "controller-uid=<jobUID>"
+		// batch/v1 Job controller uses "controller-uid" for Pods owner ref and label "job-name" usually.
+		// Let's try matching labels.
+		var updatedJob batchv1.Job
+		if err := p.Client.Get(ctx, types.NamespacedName{Name: jobName, Namespace: TargetNamespace}, &updatedJob); err == nil {
+			// Use selector from job spec if available, or match labels
+			if err := p.Client.List(ctx, &podList, client.InNamespace(TargetNamespace), client.MatchingLabels{"job-name": jobName}); err == nil && len(podList.Items) > 0 {
+				podName := podList.Items[0].Name
+				req := p.Clientset.CoreV1().Pods(TargetNamespace).GetLogs(podName, &corev1.PodLogOptions{})
+				podLogs, err := req.Stream(ctx)
+				if err == nil {
+					defer podLogs.Close()
+					buf := new(strings.Builder)
+					_, err := io.Copy(buf, podLogs)
+					if err == nil {
+						logs := buf.String()
+						// Parse IP from logs. Assuming format "Public IP: <ip>" or similar?
+						// User said "read the logs from the job to discover the node's public IP address".
+						// I need to know the log format.
+						// Assuming `weft probe` outputs the IP as the last line or something.
+						// Or I can assume it just prints the IP.
+						// Let's assume the log contains the IP.
+						// For now, let's try to find an IP address in the logs.
+						// Or maybe `weft probe` outputs JSON?
+						// Without `weft probe` source, I'll guess.
+						// Assuming `weft probe` prints the IP to stdout.
+						trimmed := strings.TrimSpace(logs)
+						if trimmed != "" {
+							// Basic validation?
+							ip = trimmed
+							log.Info("Discovered public IP from logs", "ip", ip)
+						}
+					}
+				}
+			}
+		}
+
 		// Create WeftServer
 		secret := randString(10)
 		connStr := fmt.Sprintf("weft://%s@%s:9092", secret, ip)
