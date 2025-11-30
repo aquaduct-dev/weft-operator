@@ -197,14 +197,11 @@ func (r *WeftTunnelReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	for _, d := range depList.Items {
 		if !expectedDeployments[d.Name] {
-			// Verify OwnerRef just in case
-			if metav1.IsControlledBy(&d, &weftTunnel) {
-				log.Info("Deleting obsolete tunnel deployment", "deployment", d.Name)
-				if err := r.Delete(ctx, &d); err != nil {
-					log.Error(err, "Failed to delete obsolete deployment", "deployment", d.Name)
-					reconcileErr = err
-					return ctrl.Result{}, err
-				}
+			log.Info("Deleting obsolete tunnel deployment", "deployment", d.Name)
+			if err := r.Delete(ctx, &d); err != nil {
+				log.Error(err, "Failed to delete obsolete deployment", "deployment", d.Name)
+				reconcileErr = err
+				return ctrl.Result{}, err
 			}
 		}
 	}
