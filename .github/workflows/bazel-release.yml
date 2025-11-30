@@ -85,7 +85,7 @@ jobs:
           
       - name: Push Helm chart
         run: |
-          bazelisk run //chart:push
+          bazelisk run //chart:weft_operator.push
 
       - name: Save Bazel cache
         uses: actions/cache/save@v4

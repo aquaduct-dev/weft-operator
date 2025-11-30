@@ -36,6 +36,13 @@ go_test(
         "reconciler_test.go",
         "suite_test.go",
     ],
+    data = [
+        "//chart/templates/crds:gateway_crds",
+        "//chart/templates/crds:generated.crds",
+    ],
+    env = {
+        "KUBEBUILDER_ASSETS": "/home/rohit/.local/share/kubebuilder-envtest/k8s/1.29.0-linux-amd64",
+    },
     deps = [
         ":wefttunnel",
         "//api/v1alpha1",
@@ -44,6 +51,7 @@ go_test(
         "@io_k8s_api//apps/v1:apps",
         "@io_k8s_api//core/v1:core",
         "@io_k8s_apimachinery//pkg/api/errors",
+        "@io_k8s_apimachinery//pkg/api/meta",
         "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
         "@io_k8s_apimachinery//pkg/runtime",
         "@io_k8s_apimachinery//pkg/types",

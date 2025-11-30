@@ -19,6 +19,8 @@ package wefttunnel
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/url"
 	"slices"
 
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -59,6 +61,11 @@ func (r *WeftTunnelReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	var weftTunnel weftv1alpha1.WeftTunnel
 	if err := r.Get(ctx, req.NamespacedName, &weftTunnel); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	// Ensure GVK is set for SetOwnerReference
+	if weftTunnel.GetObjectKind().GroupVersionKind().Empty() {
+		weftTunnel.SetGroupVersionKind(weftv1alpha1.GroupVersion.WithKind("WeftTunnel"))
 	}
 
 	var reconcileErr error
@@ -152,6 +159,7 @@ func (r *WeftTunnelReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			}
 			dep.Spec.Replicas = int32Ptr(1)
 			dep.Spec.Template.ObjectMeta.Labels = labels
+			dep.Spec.Template.Spec.HostNetwork = true
 			dep.Spec.Template.Spec.Containers = []corev1.Container{
 				{
 					Name:    "tunnel",
@@ -159,7 +167,12 @@ func (r *WeftTunnelReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 					Command: cmdArgs,
 				},
 			}
-			return controllerutil.SetOwnerReference(&weftTunnel, dep, r.Scheme)
+			err := controllerutil.SetControllerReference(&weftTunnel, dep, r.Scheme)
+			if err != nil {
+				log.Error(err, "SetControllerReference failed")
+				return err
+			}
+			return nil
 		})
 		if err != nil {
 			log.Error(err, "Failed to reconcile Tunnel Deployment", "deployment", depName)
@@ -251,6 +264,26 @@ func (r *WeftTunnelReconciler) updateStatus(ctx context.Context, weftTunnel *wef
 }
 
 func (r *WeftTunnelReconciler) constructTargetURL(srv *weftv1alpha1.WeftServer) (string, error) {
+	if srv.Spec.Location == weftv1alpha1.WeftServerLocationInternal {
+		u, err := url.Parse(srv.Spec.ConnectionString)
+		if err != nil {
+			return "", err
+		}
+
+		// Replace host with service DNS
+		// Service name convention: <server-name>-server
+		svcName := fmt.Sprintf("%s-server", srv.Name)
+		// Namespace convention: same as server (usually)
+		svcDNS := fmt.Sprintf("%s.%s.svc", svcName, srv.Namespace)
+
+		// Preserve port if present
+		if _, port, _ := net.SplitHostPort(u.Host); port != "" {
+			u.Host = fmt.Sprintf("%s:%s", svcDNS, port)
+		} else {
+			u.Host = svcDNS
+		}
+		return u.String(), nil
+	}
 	return srv.Spec.ConnectionString, nil
 }
 

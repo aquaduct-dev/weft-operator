@@ -1,4 +1,4 @@
-load("@rules_helm//helm:defs.bzl", "helm_chart", )
+load("@rules_helm//helm:defs.bzl", "helm_chart")
 
 helm_chart(
     name = "weft_operator",
@@ -8,6 +8,7 @@ helm_chart(
         "//chart/templates/crds:gateway_crds",
     ],
     images = ["//cmd:weft_operator_image_push"],
+    registry_url = "oci://ghcr.io/aquaduct-dev/charts",
     templates = glob(["templates/**"]),
     upgrade_opts = [
         "--namespace=weft-system",
@@ -15,6 +16,4 @@ helm_chart(
     ],
     values = "values.yaml",
     visibility = ["//visibility:public"],
-    registry_url = "oci://ghcr.io/aquaduct-dev/charts",
 )
-

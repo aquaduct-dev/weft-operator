@@ -35,8 +35,8 @@ go_test(
         "suite_test.go",
     ],
     data = [
-        "//chart/templates/crds:generated.crds",
         "//chart/templates/crds:gateway_crds",
+        "//chart/templates/crds:generated.crds",
     ],
     env = {
         "KUBEBUILDER_ASSETS": "/home/rohit/.local/share/kubebuilder-envtest/k8s/1.29.0-linux-amd64",
