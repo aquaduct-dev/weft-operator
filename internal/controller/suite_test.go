@@ -19,6 +19,7 @@ package controller
 import (
 	"path/filepath"
 	"testing"
+	"os"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -51,8 +52,9 @@ var _ = BeforeSuite(func() {
 	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
 
 	By("bootstrapping test environment")
+	testSrcDir := os.Getenv("TEST_SRCDIR")
 	testEnv = &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "chart", "templates", "crds")},
+		CRDDirectoryPaths:     []string{filepath.Join(testSrcDir, "_main", "chart", "templates", "crds")},
 		ErrorIfCRDPathMissing: true,
 	}
 
