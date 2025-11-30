@@ -20,6 +20,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"os" // Added os import
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -62,8 +63,7 @@ var _ = BeforeSuite(func() {
 	By("bootstrapping test environment")
 	testEnv = &envtest.Environment{
 		CRDDirectoryPaths: []string{
-			filepath.Join("..", "..", "..", "chart", "templates", "crds"),
-			filepath.Join("data"),
+			filepath.Join(os.Getenv("TEST_SRCDIR"), "_main", "chart", "templates", "crds"),
 		},
 		ErrorIfCRDPathMissing: true,
 	}

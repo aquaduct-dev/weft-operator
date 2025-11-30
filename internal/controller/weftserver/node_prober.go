@@ -47,6 +47,9 @@ type NodeProber struct {
 	Scheme *runtime.Scheme
 }
 
+//+kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
+//+kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
+
 // Start implements manager.Runnable
 func (p *NodeProber) Start(ctx context.Context) error {
 	log := log.FromContext(ctx).WithName("node-prober")
@@ -156,7 +159,7 @@ func (p *NodeProber) processNode(ctx context.Context, node *corev1.Node) error {
 	// Wait for Job completion
 	// Use a simple poll loop
 	success := false
-	for i := 0; i < 60; i++ { // Wait up to 60 seconds (probe should be fast)
+	for range 60 { // Wait up to 60 seconds (probe should be fast)
 		time.Sleep(1 * time.Second)
 		var updatedJob batchv1.Job
 		if err := p.Client.Get(ctx, types.NamespacedName{Name: jobName, Namespace: TargetNamespace}, &updatedJob); err != nil {

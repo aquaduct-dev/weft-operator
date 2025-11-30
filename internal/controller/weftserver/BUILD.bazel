@@ -1,7 +1,13 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
+filegroup(
+    name = "srcs",
+    srcs = glob(["*.go"]),
+    visibility = ["//visibility:public"],
+)
+
 go_library(
-    name = "reconciler",
+    name = "weftserver",
     srcs = [
         "node_prober.go",
         "reconciler.go",
@@ -10,6 +16,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//api/v1alpha1",
+        "//internal/resource",
         "@com_github_aquaduct_dev_weft//src/client",
         "@io_k8s_api//apps/v1:apps",
         "@io_k8s_api//batch/v1:batch",
@@ -28,14 +35,21 @@ go_library(
 )
 
 go_test(
-    name = "weftserver_controller_test",
+    name = "weftserver_test",
     srcs = [
         "reconciler_test.go",
         "suite_test.go",
     ],
+    data = [
+        "//chart/templates/crds:generated.crds",
+        "//chart/templates/crds:gateway_crds",
+    ],
+    env = {
+        "KUBEBUILDER_ASSETS": "/home/rohit/.local/share/kubebuilder-envtest/k8s/1.29.0-linux-amd64",
+    },
     deps = [
+        ":weftserver",
         "//api/v1alpha1",
-        "//internal/controller/weftserver:reconciler",
         "@com_github_aquaduct_dev_weft//src/client",
         "@com_github_onsi_ginkgo_v2//:ginkgo",
         "@com_github_onsi_gomega//:gomega",
@@ -52,8 +66,5 @@ go_test(
         "@io_k8s_sigs_controller_runtime//pkg/envtest",
         "@io_k8s_sigs_controller_runtime//pkg/log",
         "@io_k8s_sigs_controller_runtime//pkg/log/zap",
-    ],
-    data = [
-        "//chart/templates/crds:crds",
     ],
 )

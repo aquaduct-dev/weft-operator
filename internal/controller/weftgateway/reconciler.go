@@ -35,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	weftv1alpha1 "aquaduct.dev/weft-operator/api/v1alpha1"
+	"aquaduct.dev/weft-operator/internal/resource"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
@@ -132,7 +133,7 @@ func (r *WeftGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				if backend.Namespace != nil {
 					ns = string(*backend.Namespace)
 				}
-				
+
 				port := int32(80)
 				if backend.Port != nil {
 					port = int32(*backend.Port)
@@ -146,7 +147,7 @@ func (r *WeftGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				// Gateway Listeners:
 				for _, listener := range gateway.Spec.Listeners {
 					// Check if route attaches to this listener (simplified)
-					
+
 					// Assume Listener Hostname is the base
 					if listener.Hostname == nil {
 						continue
@@ -162,38 +163,41 @@ func (r *WeftGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 						fullSrcURL, _ := url.JoinPath(baseURL, path)
 
 						// Generate Tunnel Name
+
 						hash := sha256.Sum256([]byte(fmt.Sprintf("%s-%s-%s", gateway.Name, route.Name, fullSrcURL)))
 						hashStr := hex.EncodeToString(hash[:])[:8]
 						tunnelName := fmt.Sprintf("gw-%s-%s", gateway.Name, hashStr)
-						
 						expectedTunnels[tunnelName] = true
-
 						tunnel := &weftv1alpha1.WeftTunnel{
 							ObjectMeta: metav1.ObjectMeta{
-								Name:      tunnelName,
+								Name: tunnelName,
+
 								Namespace: gateway.Namespace,
 							},
 						}
-
 						op, err := controllerutil.CreateOrUpdate(ctx, r.Client, tunnel, func() error {
 							tunnel.Spec.TargetServers = targetServers
 							tunnel.Spec.SrcURL = fullSrcURL
 							tunnel.Spec.DstURL = dstURL
-
 							labels := map[string]string{
 								"app":        "weft-gateway-tunnel",
 								"gateway":    gateway.Name,
 								"route":      route.Name,
 								"created-by": "weft-operator",
 							}
+
 							tunnel.ObjectMeta.Labels = labels
+
 							return controllerutil.SetControllerReference(&gateway, tunnel, r.Scheme)
 						})
-
 						if err != nil {
+
 							log.Error(err, "Failed to reconcile WeftTunnel", "tunnel", tunnelName)
+
 							return ctrl.Result{}, err
+
 						}
+
 						if op != controllerutil.OperationResultNone {
 							log.Info("WeftTunnel reconciled", "tunnel", tunnelName, "operation", op)
 						}
@@ -210,17 +214,39 @@ func (r *WeftGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	for _, t := range tunnelList.Items {
-		if !expectedTunnels[t.Name] {
-			if metav1.IsControlledBy(&t, &gateway) {
-				log.Info("Deleting obsolete WeftTunnel", "tunnel", t.Name)
-				if err := r.Delete(ctx, &t); err != nil {
-					log.Error(err, "Failed to delete obsolete WeftTunnel", "tunnel", t.Name)
-					return ctrl.Result{}, err
-				}
-			}
+		tunnelToDelete := t // Create a copy for the closure
+		// Only consider tunnels owned by this gateway.
+		if !metav1.IsControlledBy(&tunnelToDelete, &gateway) {
+			continue
+		}
+
+		_, err := resource.Resource(resource.Options{
+			Name: fmt.Sprintf("wefttunnel/%s", tunnelToDelete.Name),
+			Log:  func(v ...any) { log.Info(fmt.Sprint(v...)) },
+			Exists: func() bool {
+				// We listed it, so it exists.
+				// The outer check for IsControlledBy ensures we don't accidentally delete unowned tunnels.
+				return true
+			},
+			ShouldExist: func() bool {
+				return expectedTunnels[tunnelToDelete.Name] // Should only exist if in expectedTunnels
+			},
+			IsUpToDate: func() bool {
+				// If it exists and should exist, we assume it's up to date for the purpose of this pruning loop.
+				// Actual reconciliation happens in the creation loop above.
+				return true
+			},
+			Delete: func() error {
+				log.Info("Deleting obsolete WeftTunnel", "tunnel", tunnelToDelete.Name)
+				return r.Delete(ctx, &tunnelToDelete)
+			},
+		})
+		if err != nil {
+			log.Error(err, "Failed to delete obsolete WeftTunnel", "tunnel", tunnelToDelete.Name)
+			return ctrl.Result{}, err
 		}
 	}
-	
+
 	// Update Status (Simplified)
 	return ctrl.Result{}, r.updateGatewayStatus(ctx, &gateway)
 }
@@ -238,30 +264,28 @@ func (r *WeftGatewayReconciler) isRouteAttachedToGateway(route *gatewayv1.HTTPRo
 	return false
 }
 
-
 func (r *WeftGatewayReconciler) updateGatewayStatus(ctx context.Context, gw *gatewayv1.Gateway) error {
 	// Determine condition based on Tunnel status?
 	// For now, just mark Accepted/Programmed
-	
+
 	meta.SetStatusCondition(&gw.Status.Conditions, metav1.Condition{
-		Type:    string(gatewayv1.GatewayConditionAccepted),
-		Status:  metav1.ConditionTrue,
-		Reason:  string(gatewayv1.GatewayReasonAccepted),
-		Message: "Gateway accepted by weft-operator",
+		Type:               string(gatewayv1.GatewayConditionAccepted),
+		Status:             metav1.ConditionTrue,
+		Reason:             string(gatewayv1.GatewayReasonAccepted),
+		Message:            "Gateway accepted by weft-operator",
 		ObservedGeneration: gw.Generation,
 	})
-	
+
 	meta.SetStatusCondition(&gw.Status.Conditions, metav1.Condition{
-		Type:    string(gatewayv1.GatewayConditionProgrammed),
-		Status:  metav1.ConditionTrue,
-		Reason:  string(gatewayv1.GatewayReasonProgrammed),
-		Message: "Gateway programmed",
+		Type:               string(gatewayv1.GatewayConditionProgrammed),
+		Status:             metav1.ConditionTrue,
+		Reason:             string(gatewayv1.GatewayReasonProgrammed),
+		Message:            "Gateway programmed",
 		ObservedGeneration: gw.Generation,
 	})
 
 	return r.Status().Update(ctx, gw)
 }
-
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *WeftGatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -284,7 +308,7 @@ func (r *WeftGatewayReconciler) findGatewaysForRoute(ctx context.Context, obj cl
 	var requests []reconcile.Request
 	for _, parent := range route.Spec.ParentRefs {
 		// Check Kind/Group if necessary (defaults to Gateway/gateway.networking.k8s.io)
-		
+
 		ns := route.Namespace
 		if parent.Namespace != nil {
 			ns = string(*parent.Namespace)

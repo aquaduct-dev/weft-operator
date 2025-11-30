@@ -8,6 +8,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -221,6 +222,53 @@ var _ = Describe("WeftTunnel Controller", func() {
 				err := k8sClient.Get(ctx, types.NamespacedName{Name: depNameA, Namespace: "default"}, &appsv1.Deployment{})
 				return errors.IsNotFound(err)
 			}, timeout, interval).Should(BeTrue())
+		})
+
+		It("Should create Deployments for servers in weft-system namespace", func(ctx context.Context) {
+			// Ensure weft-system namespace exists
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: "weft-system"},
+			}
+			// Ignore error if it already exists
+			_ = k8sClient.Create(ctx, ns)
+
+			By("Creating WeftServer in weft-system")
+			sysSrv := &weftv1alpha1.WeftServer{
+				ObjectMeta: metav1.ObjectMeta{Name: "sys-server", Namespace: "weft-system"},
+				Spec: weftv1alpha1.WeftServerSpec{
+					Location:         weftv1alpha1.WeftServerLocationInternal,
+					ConnectionString: "weft://sys:pass@0.0.0.0:9090",
+				},
+			}
+			Expect(k8sClient.Create(ctx, sysSrv)).To(Succeed())
+
+			By("Creating WeftTunnel in default namespace")
+			tunnel := &weftv1alpha1.WeftTunnel{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "tunnel-cross-ns",
+					Namespace: "default",
+				},
+				Spec: weftv1alpha1.WeftTunnelSpec{
+					TargetServers: []string{}, // Empty means all (should include system)
+					SrcURL:        "http://src4",
+					DstURL:        "http://dst4",
+				},
+			}
+			Expect(k8sClient.Create(ctx, tunnel)).To(Succeed())
+
+			By("Reconciling")
+			r := &wefttunnel.WeftTunnelReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: tunnel.Name, Namespace: tunnel.Namespace}})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Checking Deployment for sys-server")
+			depName := fmt.Sprintf("tunnel-%s-to-%s", tunnel.Name, sysSrv.Name)
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{Name: depName, Namespace: "default"}, &appsv1.Deployment{})
+			}, timeout, interval).Should(Succeed())
 		})
 	})
 })

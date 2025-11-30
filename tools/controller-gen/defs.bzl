@@ -10,7 +10,8 @@ def _controller_gen_impl(ctx):
         "GOCACHE": "/tmp/gocache",
         "GOPATH": "/tmp/gopath",
         "GOMODCACHE": "/tmp/gomodcache",
-        "PATH": go.sdk_root.path + "/bin:/bin:/usr/bin",
+        "GOTOOLCHAIN": "local",
+        "GOFLAGS": "-mod=readonly",
     }
 
     # Collect all SDK files
@@ -28,13 +29,14 @@ def _controller_gen_impl(ctx):
 
     ctx.actions.run_shell(
         outputs = ctx.outputs.outs,
-        inputs = depset(ctx.files.srcs, transitive = [sdk_files]),
+        inputs = depset(ctx.files.srcs + [go.go], transitive = [sdk_files]),
         tools = [tool],
         command = """
             export GOCACHE=$(mktemp -d)
             export GOPATH=$(mktemp -d)
             export GOMODCACHE=$(mktemp -d)
-            export PATH=$PATH:{go_bin}
+            
+            export PATH=$PWD/{go_bin_dir}:$PATH
             
             # Run controller-gen
             {tool} "$@"
@@ -50,11 +52,10 @@ def _controller_gen_impl(ctx):
             for out in $outputs; do
                 base=$(basename "$out")
                 # Find the generated file. We assume it's in the current directory or subdirectories.
-                # We look specifically in api/v1alpha1 first as that's where we expect them.
                 found=$(find . -name "$base" -type f | head -n 1)
                 
                 if [ -n "$found" ]; then
-                    echo "Moving $found to $out"
+                    # echo "Moving $found to $out"
                     cp "$found" "$out"
                 else
                     echo "Error: Expected output $base not generated."
@@ -64,9 +65,9 @@ def _controller_gen_impl(ctx):
                 fi
             done
         """.format(
-            go_bin = go.sdk_root.path + "/bin",
             tool = tool.path,
             output_paths = output_paths,
+            go_bin_dir = go.go.dirname,
         ),
         arguments = [args],
         mnemonic = "ControllerGen",
@@ -76,7 +77,7 @@ def _controller_gen_impl(ctx):
 
     return [DefaultInfo(files = depset(ctx.outputs.outs))]
 
-controller_gen = rule(
+controller_gen_rule = rule(
     implementation = _controller_gen_impl,
     attrs = {
         "srcs": attr.label_list(allow_files = True),
@@ -93,3 +94,70 @@ controller_gen = rule(
     },
     toolchains = ["@rules_go//go:toolchain"],
 )
+
+def controller_gen(name, srcs, 
+                   deepcopy_out = None,
+                   rbac_outs = [],
+                   crd_outs = [],
+                   webhook_outs = [],
+                   args = [],
+                   deepcopy_args = ["object:headerFile=/dev/null"],
+                   rbac_args = ["rbac:roleName=manager-role"],
+                   crd_args = ["crd"],
+                   webhook_args = ["webhook"],
+                   **kwargs):
+    
+    # Calculate paths arg
+    paths_arg = []
+    has_paths = False
+    for arg in args:
+        if arg.startswith("paths="):
+            has_paths = True
+            paths_arg.append(arg)
+            break
+    
+    if not has_paths:
+        paths_arg = ["paths=./" + native.package_name()]
+        
+    # Filter out paths from args if it was there (to avoid duplication if we appended it)
+    # But actually we want to pass it if the user provided it.
+    # common_args are args provided by user that are NOT paths (if we handled paths separately)
+    # But simplicity: just use args as provided by user, but ensure paths is there.
+    
+    user_args_without_paths = [a for a in args if not a.startswith("paths=")]
+    final_paths_arg = paths_arg # This is either user's paths or default paths
+    
+    # Helper to create rule
+    def create_rule(suffix, outs, specific_args):
+        if not outs:
+            return
+        
+        # Output dir args
+        # We add output configuration to ensure generated files are found easily in the root of execution
+        extra_args = []
+        if suffix == "rbac":
+            extra_args.append("output:rbac:artifacts:config=.")
+        elif suffix == "crds":
+            extra_args.append("output:crd:dir=.")
+        elif suffix == "webhook":
+            extra_args.append("output:webhook:dir=.")
+            
+        controller_gen_rule(
+            name = name + "." + suffix,
+            srcs = srcs,
+            outs = outs,
+            args = specific_args + final_paths_arg + user_args_without_paths + extra_args,
+            **kwargs
+        )
+
+    if deepcopy_out:
+        create_rule("deepcopy", [deepcopy_out], deepcopy_args)
+        
+    if rbac_outs:
+        create_rule("rbac", rbac_outs, rbac_args)
+        
+    if crd_outs:
+        create_rule("crds", crd_outs, crd_args)
+        
+    if webhook_outs:
+        create_rule("webhook", webhook_outs, webhook_args)

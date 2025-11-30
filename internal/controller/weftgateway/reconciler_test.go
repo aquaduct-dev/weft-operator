@@ -39,6 +39,10 @@ var _ = Describe("WeftGateway Controller", func() {
 			gwName := "my-gateway"
 			hostname := gatewayv1.Hostname("test.example.com")
 			gateway := &gatewayv1.Gateway{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: gatewayv1.GroupVersion.String(),
+					Kind:       "Gateway",
+				},
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      gwName,
 					Namespace: "default",

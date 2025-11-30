@@ -1,5 +1,11 @@
 load("@rules_go//go:def.bzl", "go_library")
 
+filegroup(
+    name = "srcs",
+    srcs = glob(["*.go"]),
+    visibility = ["//visibility:public"],
+)
+
 go_library(
     name = "aquaducttaas",
     srcs = ["reconciler.go"],

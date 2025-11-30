@@ -29,14 +29,14 @@ bazel_dep(
 )
 
 go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
-go_sdk.from_file(go_mod = "//:go.mod")
+# go_sdk.from_file(go_mod = "//:go.mod")
 go_sdk.download(
-    name = "go_sdk",
-    version = "1.25.4",
+    name = "go_sdk_custom",
+    version = "1.24.1",
 )
-use_repo(go_sdk, "go_sdk")
+use_repo(go_sdk, "go_sdk_custom")
 
-register_toolchains("@go_sdk//:all")
+register_toolchains("@go_sdk_custom//:all")
 
 go_deps = use_extension("@gazelle//:extensions.bzl", "go_deps")
 go_deps.from_file(go_mod = "//:go.mod")

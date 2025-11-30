@@ -11,7 +11,7 @@ go_library(
         "//api/v1alpha1",
         "//internal/controller/aquaducttaas",
         "//internal/controller/weftgateway",
-        "//internal/controller/weftserver:reconciler",
+        "//internal/controller/weftserver",
         "//internal/controller/wefttunnel",
         "@io_k8s_apimachinery//pkg/runtime",
         "@io_k8s_apimachinery//pkg/util/runtime",
@@ -48,7 +48,13 @@ oci_push(
     name = "weft_operator_image_push",
     image = ":weft_operator_image",
     repository = "ghcr.io/aquaduct-dev/weft-operator",
-    remote_tags = ["latest"],
-    visibility = ["//chart:__subpackages__"],
+    visibility = ["//visibility:public"],
 )
-                                                                                                      
+
+oci_load(
+    name = "weft_operator_image_load",
+    image = ":weft_operator_image",
+    repo_tags = ["ghcr.io/aquaduct-dev/weft-operator:latest"],
+    # For local development, it's often useful to have an alias to load into Docker.
+    # The image will be tagged as ghcr.io/aquaduct-dev/weft-operator:latest in the local docker daemon.
+)

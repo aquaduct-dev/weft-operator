@@ -19,7 +19,7 @@ package wefttunnel
 import (
 	"context"
 	"fmt"
-	"net/url"
+	"slices"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 
@@ -78,7 +78,18 @@ func (r *WeftTunnelReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			reconcileErr = err
 			return ctrl.Result{}, err
 		}
-		targetServers = serverList.Items
+		targetServers = append(targetServers, serverList.Items...)
+
+		// Also connect to servers in weft-system
+		if req.Namespace != "weft-system" {
+			var sysServerList weftv1alpha1.WeftServerList
+			if err := r.List(ctx, &sysServerList, client.InNamespace("weft-system")); err != nil {
+				log.Error(err, "Failed to list system WeftServers")
+				reconcileErr = err
+				return ctrl.Result{}, err
+			}
+			targetServers = append(targetServers, sysServerList.Items...)
+		}
 	} else {
 		// Connect to specified servers
 		for _, name := range weftTunnel.Spec.TargetServers {
@@ -141,7 +152,6 @@ func (r *WeftTunnelReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			}
 			dep.Spec.Replicas = int32Ptr(1)
 			dep.Spec.Template.ObjectMeta.Labels = labels
-			dep.Spec.Template.Spec.HostNetwork = true
 			dep.Spec.Template.Spec.Containers = []corev1.Container{
 				{
 					Name:    "tunnel",
@@ -149,7 +159,7 @@ func (r *WeftTunnelReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 					Command: cmdArgs,
 				},
 			}
-			return controllerutil.SetControllerReference(&weftTunnel, dep, r.Scheme)
+			return controllerutil.SetOwnerReference(&weftTunnel, dep, r.Scheme)
 		})
 		if err != nil {
 			log.Error(err, "Failed to reconcile Tunnel Deployment", "deployment", depName)
@@ -189,6 +199,32 @@ func (r *WeftTunnelReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 }
 
 func (r *WeftTunnelReconciler) updateStatus(ctx context.Context, weftTunnel *weftv1alpha1.WeftTunnel, reconcileErr error) error {
+	// Re-calculate readiness based on deployments
+	// Note: This is a bit redundant with the check in the loop, but safer because
+	// the loop logic above depends on the CreateOrUpdate return which might not be fully up-to-date regarding Status
+	// if the object was just created.
+	// Actually, relying on the loop variable `allReady` passed via closure/argument is hard because updateStatus is deferred.
+	// We need to re-check the deployments here or accept that `defer` captures arguments at call time? No, defer executes function at end.
+	// But we can't easily pass `allReady` to the deferred function unless we wrap it.
+
+	// Let's just list the deployments again to be sure.
+	var depList appsv1.DeploymentList
+	if err := r.List(ctx, &depList, client.InNamespace(weftTunnel.Namespace), client.MatchingLabels{"tunnel": weftTunnel.Name, "created-by": "weft-operator"}); err != nil {
+		return err
+	}
+
+	allReady := true
+	if len(depList.Items) == 0 {
+		// No deployments yet?
+		allReady = false
+	}
+	for _, d := range depList.Items {
+		if d.Status.AvailableReplicas == 0 {
+			allReady = false
+			break
+		}
+	}
+
 	if reconcileErr != nil {
 		meta.SetStatusCondition(&weftTunnel.Status.Conditions, metav1.Condition{
 			Type:    "Available",
@@ -196,39 +232,26 @@ func (r *WeftTunnelReconciler) updateStatus(ctx context.Context, weftTunnel *wef
 			Reason:  "ReconcileError",
 			Message: reconcileErr.Error(),
 		})
+	} else if !allReady {
+		meta.SetStatusCondition(&weftTunnel.Status.Conditions, metav1.Condition{
+			Type:    "Available",
+			Status:  metav1.ConditionFalse,
+			Reason:  "WaitingForDeployments",
+			Message: "One or more tunnel deployments are not yet available",
+		})
 	} else {
 		meta.SetStatusCondition(&weftTunnel.Status.Conditions, metav1.Condition{
 			Type:    "Available",
 			Status:  metav1.ConditionTrue,
 			Reason:  "Reconciled",
-			Message: "WeftTunnel reconciled successfully",
+			Message: "WeftTunnel reconciled successfully and all tunnels are up",
 		})
 	}
 	return r.Status().Update(ctx, weftTunnel)
 }
 
 func (r *WeftTunnelReconciler) constructTargetURL(srv *weftv1alpha1.WeftServer) (string, error) {
-	u, err := url.Parse(srv.Spec.ConnectionString)
-	if err != nil {
-		return "", err
-	}
-
-	if srv.Spec.Location == weftv1alpha1.WeftServerLocationInternal {
-		// Reconstruct URL with Service DNS
-		// Host format: <ServerName>-server.<Namespace>.svc
-		host := fmt.Sprintf("%s-server.%s.svc", srv.Name, srv.Namespace)
-
-		// Port from original URL or default 8080
-		port := u.Port()
-		if port == "" {
-			port = "8080"
-		}
-
-		// Rebuild host with port
-		u.Host = fmt.Sprintf("%s:%s", host, port)
-	}
-
-	return u.String(), nil
+	return srv.Spec.ConnectionString, nil
 }
 
 func int32Ptr(i int32) *int32 {
@@ -261,17 +284,7 @@ func (r *WeftTunnelReconciler) findTunnelsForServer(ctx context.Context, obj cli
 
 	var requests []reconcile.Request
 	for _, tunnel := range tunnelList.Items {
-		match := false
-		if len(tunnel.Spec.TargetServers) == 0 {
-			match = true
-		} else {
-			for _, target := range tunnel.Spec.TargetServers {
-				if target == server.Name {
-					match = true
-					break
-				}
-			}
-		}
+		match := len(tunnel.Spec.TargetServers) == 0 || slices.Contains(tunnel.Spec.TargetServers, server.Name)
 
 		if match {
 			requests = append(requests, reconcile.Request{

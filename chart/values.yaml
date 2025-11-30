@@ -1,10 +1,8 @@
 replicaCount: 1
 
 image:
-  repository: ghcr.io/aquaduct-dev/weft-operator
+  url: {@//cmd:weft_operator_image_push}
   pullPolicy: Always
-  # Overrides the image tag whose default is the chart appVersion.
-  tag: "latest"
 
 imagePullSecrets: []
 nameOverride: ""

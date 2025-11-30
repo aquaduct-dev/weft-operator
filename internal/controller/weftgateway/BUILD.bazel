@@ -1,5 +1,11 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
+filegroup(
+    name = "srcs",
+    srcs = glob(["*.go"]),
+    visibility = ["//visibility:public"],
+)
+
 go_library(
     name = "weftgateway",
     srcs = ["reconciler.go"],
@@ -7,7 +13,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//api/v1alpha1",
-        "@io_k8s_apimachinery//pkg/api/errors",
+        "//internal/resource",
         "@io_k8s_apimachinery//pkg/api/meta",
         "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
         "@io_k8s_apimachinery//pkg/runtime",
@@ -23,17 +29,23 @@ go_library(
 )
 
 go_test(
-    name = "weftgateway_controller_test",
+    name = "weftgateway_test",
     srcs = [
         "reconciler_test.go",
         "suite_test.go",
     ],
+    data = [
+        "//chart/templates/crds:generated.crds",
+        "//chart/templates/crds:gateway_crds",
+    ],
+    env = {
+        "KUBEBUILDER_ASSETS": "/home/rohit/.local/share/kubebuilder-envtest/k8s/1.29.0-linux-amd64",
+    },
     deps = [
         ":weftgateway",
         "//api/v1alpha1",
         "@com_github_onsi_ginkgo_v2//:ginkgo",
         "@com_github_onsi_gomega//:gomega",
-        "@io_k8s_apimachinery//pkg/api/errors",
         "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
         "@io_k8s_apimachinery//pkg/runtime",
         "@io_k8s_apimachinery//pkg/types",
@@ -45,9 +57,5 @@ go_test(
         "@io_k8s_sigs_controller_runtime//pkg/log",
         "@io_k8s_sigs_controller_runtime//pkg/log/zap",
         "@io_k8s_sigs_gateway_api//apis/v1:apis",
-    ],
-    data = [
-        "//chart/templates/crds:crds",
-        "data/gateway-api.yaml",
     ],
 )

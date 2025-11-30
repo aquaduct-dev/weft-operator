@@ -2,7 +2,7 @@ module aquaduct.dev/weft-operator
 
 go 1.24.1
 
-toolchain go1.24.9
+toolchain go1.24.10
 
 require (
 	github.com/aquaduct-dev/weft v1.0.64

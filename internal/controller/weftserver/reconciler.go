@@ -27,7 +27,6 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -37,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	weftv1alpha1 "aquaduct.dev/weft-operator/api/v1alpha1"
+	"aquaduct.dev/weft-operator/internal/resource"
 	weftclient "github.com/aquaduct-dev/weft/src/client"
 )
 
@@ -96,20 +96,6 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		},
 	}
 
-	if weftServer.Spec.Location == weftv1alpha1.WeftServerLocationExternal {
-		// Delete deployment if it exists
-		if err := r.Delete(ctx, dep); err != nil && !errors.IsNotFound(err) {
-			log.Error(err, "Failed to delete external WeftServer deployment")
-			return ctrl.Result{}, err
-		}
-		// Delete service if it exists
-		if err := r.Delete(ctx, svc); err != nil && !errors.IsNotFound(err) {
-			log.Error(err, "Failed to delete external WeftServer service")
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, r.updateWeftServerStatus(ctx, &weftServer, nil)
-	}
-
 	// Internal: Create or Update Deployment and Service
 	labels := map[string]string{
 		"app":      "weft-server",
@@ -128,9 +114,8 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 				port = int32(pInt)
 			}
 		}
-		if pwd, ok := u.User.Password(); ok {
-			connectionSecret = pwd
-		}
+		// The secret is stored as the username in the URL (weft://<secret>@<host>)
+		connectionSecret = u.User.Username()
 		bindIP = u.Hostname()
 	} else {
 		log.Error(err, "Failed to parse ConnectionString, using default port 8080")
@@ -163,60 +148,137 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	// Reconcile Deployment
-	op, err := controllerutil.CreateOrUpdate(ctx, r.Client, dep, func() error {
-		dep.Spec.Selector = &metav1.LabelSelector{
-			MatchLabels: labels,
-		}
-		dep.Spec.Replicas = int32Ptr(1)
-		dep.Spec.Template.ObjectMeta.Labels = labels
-		dep.Spec.Template.Spec.HostNetwork = true
-		dep.Spec.Template.Spec.Containers = []corev1.Container{
-			{
-				Name:    "server",
-				Image:   "ghcr.io/aquaduct-dev/weft:latest", // TODO: Versioning
-				Command: cmdArgs,
-				Env:     envVars,
-			},
-		}
-		return controllerutil.SetControllerReference(&weftServer, dep, r.Scheme)
+	_, err = resource.Resource(resource.Options{
+		Name: fmt.Sprintf("deployment/%s", depName),
+		Log:  func(v ...any) { log.Info(fmt.Sprint(v...)) },
+		Exists: func() bool {
+			return r.Get(ctx, client.ObjectKeyFromObject(dep), dep) == nil
+		},
+		ShouldExist: func() bool {
+			return weftServer.Spec.Location != weftv1alpha1.WeftServerLocationExternal
+		},
+		IsUpToDate: func() bool {
+			return false // Always attempt to sync
+		},
+		Create: func() error {
+			_, err := controllerutil.CreateOrUpdate(ctx, r.Client, dep, func() error {
+				dep.Spec.Selector = &metav1.LabelSelector{
+					MatchLabels: labels,
+				}
+				dep.Spec.Replicas = int32Ptr(1)
+				dep.Spec.Template.ObjectMeta.Labels = labels
+				dep.Spec.Template.Spec.HostNetwork = true
+				dep.Spec.Template.Spec.Containers = []corev1.Container{
+					{
+						Name:    "server",
+						Image:   "ghcr.io/aquaduct-dev/weft:latest", // TODO: Versioning
+						Command: cmdArgs,
+						Env:     envVars,
+					},
+				}
+				return controllerutil.SetOwnerReference(&weftServer, dep, r.Scheme)
+			})
+			return err
+		},
+		Update: func() error {
+			_, err := controllerutil.CreateOrUpdate(ctx, r.Client, dep, func() error {
+				dep.Spec.Selector = &metav1.LabelSelector{
+					MatchLabels: labels,
+				}
+				dep.Spec.Replicas = int32Ptr(1)
+				dep.Spec.Template.ObjectMeta.Labels = labels
+				dep.Spec.Template.Spec.HostNetwork = true
+				dep.Spec.Template.Spec.Containers = []corev1.Container{
+					{
+						Name:    "server",
+						Image:   "ghcr.io/aquaduct-dev/weft:latest", // TODO: Versioning
+						Command: cmdArgs,
+						Env:     envVars,
+					},
+				}
+				return controllerutil.SetOwnerReference(&weftServer, dep, r.Scheme)
+			})
+			return err
+		},
+		Delete: func() error {
+			return r.Delete(ctx, dep)
+		},
 	})
-
 	if err != nil {
 		log.Error(err, "Failed to reconcile Deployment")
 		return ctrl.Result{}, r.updateWeftServerStatus(ctx, &weftServer, err)
 	}
 
-	if op != controllerutil.OperationResultNone {
-		log.Info("Deployment reconciled", "operation", op)
-	}
-
 	// Reconcile Service
-	opSvc, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
-		svc.Spec.Selector = labels
-		svc.Spec.Type = corev1.ServiceTypeClusterIP
-		svc.Spec.Ports = []corev1.ServicePort{
-			{
-				Name:       "server",
-				Port:       port,
-				TargetPort: intstr.FromInt(int(port)),
-				Protocol:   corev1.ProtocolTCP,
-			},
-		}
-		return controllerutil.SetControllerReference(&weftServer, svc, r.Scheme)
+	_, err = resource.Resource(resource.Options{
+		Name: fmt.Sprintf("service/%s", depName),
+		Log:  func(v ...any) { log.Info(fmt.Sprint(v...)) },
+		Exists: func() bool {
+			return r.Get(ctx, client.ObjectKeyFromObject(svc), svc) == nil
+		},
+		ShouldExist: func() bool {
+			return weftServer.Spec.Location != weftv1alpha1.WeftServerLocationExternal
+		},
+		IsUpToDate: func() bool {
+			return false // Always attempt to sync
+		},
+		Create: func() error {
+			_, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
+				svc.Spec.Selector = labels
+				svc.Spec.Type = corev1.ServiceTypeClusterIP
+				svc.Spec.Ports = []corev1.ServicePort{
+					{
+						Name:       "server",
+						Port:       port,
+						TargetPort: intstr.FromInt(int(port)),
+						Protocol:   corev1.ProtocolTCP,
+					},
+				}
+				return controllerutil.SetOwnerReference(&weftServer, svc, r.Scheme)
+			})
+			return err
+		},
+		Update: func() error {
+			_, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
+				svc.Spec.Selector = labels
+				svc.Spec.Type = corev1.ServiceTypeClusterIP
+				svc.Spec.Ports = []corev1.ServicePort{
+					{
+						Name:       "server",
+						Port:       port,
+						TargetPort: intstr.FromInt(int(port)),
+						Protocol:   corev1.ProtocolTCP,
+					},
+				}
+				return controllerutil.SetOwnerReference(&weftServer, svc, r.Scheme)
+			})
+			return err
+		},
+		Delete: func() error {
+			return r.Delete(ctx, svc)
+		},
 	})
-
 	if err != nil {
 		log.Error(err, "Failed to reconcile Service")
 		return ctrl.Result{}, r.updateWeftServerStatus(ctx, &weftServer, err)
 	}
 
-	if opSvc != controllerutil.OperationResultNone {
-		log.Info("Service reconciled", "operation", opSvc)
+	// If external, we returned early in the old code, but here we might continue to updateStatus.
+	// If external, ShouldExist was false, so Dep/Svc were deleted.
+	// We should still update status.
+
+	if weftServer.Spec.Location == weftv1alpha1.WeftServerLocationExternal {
+		return ctrl.Result{}, r.updateWeftServerStatus(ctx, &weftServer, nil)
 	}
 
 	// Get deployment status and update WeftServer status
-	err = r.Get(ctx, client.ObjectKeyFromObject(dep), dep) // Get updated deployment
-	if err != nil {
+	// We re-fetch the deployment to get the latest status.
+	// Exists logic in resource.Resource fetched it into `dep` but `Update` might have changed it?
+	// `controllerutil.CreateOrUpdate` updates the object in place.
+	// But if it was deleted, `dep` might be stale or empty?
+	// If Location == Internal, we expect it to exist.
+
+	if err := r.Get(ctx, client.ObjectKeyFromObject(dep), dep); err != nil {
 		log.Error(err, "Failed to get deployment after creation/update")
 		return ctrl.Result{}, r.updateWeftServerStatus(ctx, &weftServer, err)
 	}
@@ -237,7 +299,25 @@ func (r *WeftServerReconciler) updateWeftServerStatus(ctx context.Context, weftS
 		})
 	} else {
 		// Create weftclient and list tunnels
-		weftClient, err := r.ClientFactory(weftServer.Spec.ConnectionString, "")
+		connStr := weftServer.Spec.ConnectionString
+		if weftServer.Spec.Location == weftv1alpha1.WeftServerLocationInternal {
+			// Use Service DNS for internal servers
+			u, err := url.Parse(connStr)
+			if err == nil {
+				// Host format: <ServerName>-server.<Namespace>.svc
+				host := fmt.Sprintf("%s-server.%s.svc", weftServer.Name, weftServer.Namespace)
+				port := u.Port()
+				if port == "" {
+					port = "9092"
+				}
+				u.Host = fmt.Sprintf("%s:%s", host, port)
+				connStr = u.String()
+			} else {
+				log.Error(err, "Failed to parse ConnectionString for internal URL reconstruction")
+			}
+		}
+
+		weftClient, err := r.ClientFactory(connStr, "")
 		if err != nil {
 			log.Error(err, "Failed to create weft client")
 			meta.SetStatusCondition(&weftServer.Status.Conditions, metav1.Condition{
@@ -308,4 +388,3 @@ func (r *WeftServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&weftv1alpha1.WeftServer{}).
 		Complete(r)
 }
-

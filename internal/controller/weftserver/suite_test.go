@@ -20,6 +20,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"os" // Added os import
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -45,6 +46,7 @@ var k8sClient client.Client
 var testEnv *envtest.Environment
 var ctx context.Context
 var cancel context.CancelFunc
+var crdDirectory string 
 
 // Define Scheme here for easy access in reconciler_test.go
 var testScheme *runtime.Scheme = scheme.Scheme
@@ -59,8 +61,14 @@ var _ = BeforeSuite(func() {
 	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
 
 	By("bootstrapping test environment")
+
+	testSrcDir := os.Getenv("TEST_SRCDIR")
+	
+	// Path to CRDs, relative to the test binary's runfiles
+	crdDirectory = filepath.Join(testSrcDir, "_main", "chart", "templates", "crds")
+
 	testEnv = &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "chart", "templates", "crds")},
+		CRDDirectoryPaths:     []string{crdDirectory},
 		ErrorIfCRDPathMissing: true,
 	}
 
