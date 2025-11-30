@@ -1,0 +1,117 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - 'main'
+
+jobs:
+  build-and-release:
+    name: Build (amd64) and publish release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      BAZEL_BUILD_TARGET_AMD64: //cmd:cmd
+
+    steps:
+      - name: Calculate previous run number
+        id: calc_prev_run
+        run: echo "number=$((${{ github.run_number }} - 1))" >> $GITHUB_OUTPUT
+
+      - name: Restore Bazel cache
+        uses: actions/cache/restore@v4
+        with:
+          path: "/home/runner/.cache/bazel"
+          key: bazel-${{ steps.calc_prev_run.outputs.number }}
+          restore-keys: |
+            bazel-
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Login to `ghcr.io`
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Java (required by Bazel)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Bazelisk
+        run: |
+          sudo curl -L -o /usr/local/bin/bazelisk https://github.com/bazelbuild/bazelisk/releases/download/v1.13.0/bazelisk-linux-amd64
+          sudo chmod +x /usr/local/bin/bazelisk
+          bazelisk --version
+
+      - name: Configure output directory
+        run: |
+          mkdir -p release-artifacts
+
+      - name: Test all
+        run: |
+          bazelisk test //...
+          
+      - name: Create tag
+        run: |
+            git config --local user.email "action@aquaduct.dev"
+            git config --local user.name "Aquaduct System Action Daemon"
+            git tag -a "v1.0.${{ github.run_number }}" -m "Release v${{ github.run_number }}"
+            git push origin "v1.0.${{ github.run_number }}" || true
+        env:
+            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build binaries
+        env:
+          GOARCH: amd64
+          GOOS: linux
+        run: |
+          bazelisk build --platforms=@rules_go//go/toolchain:linux_amd64 "$BAZEL_BUILD_TARGET_AMD64"
+          cp "bazel-bin/cmd/cmd" release-artifacts/weft-operator-linux-amd64
+          file release-artifacts/*
+
+      - name: Deploy container
+        run: |
+          bazelisk run //cmd:weft_operator_image_push -- --tag v1.0.${{ github.run_number }} --tag latest
+          
+      - name: Push Helm chart
+        run: |
+          bazelisk run //chart:push
+
+      - name: Save Bazel cache
+        uses: actions/cache/save@v4
+        with:
+          path: "/home/runner/.cache/bazel"
+          key: bazel-${{ github.run_number }}
+
+      - name: Make artifacts executable
+        run: |
+          chmod +x release-artifacts/*
+          file release-artifacts/*
+
+      - name: Create release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: Release v1.0.${{ github.run_number }}
+          body: Release for commit ${{ github.sha }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload binaries to release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          files: release-artifacts/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

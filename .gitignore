@@ -1,2 +1,4 @@
-bazel-*
-
+bazel-out
+bazel-bin
+bazel-testlogs
+bazel-weft-operator
