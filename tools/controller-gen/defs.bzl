@@ -43,7 +43,6 @@ def _controller_gen_impl(ctx):
             export PATH=$PWD/{go_bin_dir}:$PATH
             
             # Run controller-gen
-            echo {tool} "$@"
             {tool} "$@"
             RESULT=$?
             
