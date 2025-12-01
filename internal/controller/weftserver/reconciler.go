@@ -29,6 +29,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	k8sresource "k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -69,6 +70,9 @@ type WeftServerReconciler struct {
 //+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 //+kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+//+kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -95,6 +99,12 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      depName,
+			Namespace: weftServer.Namespace,
+		},
+	}
+	pvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("%s-certs", weftServer.Name),
 			Namespace: weftServer.Namespace,
 		},
 	}
@@ -147,7 +157,7 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	// Construct command arguments
-	cmdArgs := []string{"weft", "server"}
+	cmdArgs := []string{"server"}
 	if connectionSecret != "" {
 		cmdArgs = append(cmdArgs, fmt.Sprintf("--connection-secret=%s", connectionSecret))
 	}
@@ -161,6 +171,10 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		cmdArgs = append(cmdArgs, fmt.Sprintf("--usage-reporting-url=%s", weftServer.Spec.UsageReportingURL))
 	}
 
+	// Add PVC mount path
+	certsPath := "/var/lib/weft/certs"
+	cmdArgs = append(cmdArgs, fmt.Sprintf("--certs-cache-path=%s", certsPath))
+
 	var envVars []corev1.EnvVar
 	if weftServer.Spec.CloudflareTokenSecretRef != nil {
 		cmdArgs = append(cmdArgs, "--cloudflare-token=$(CLOUDFLARE_TOKEN)")
@@ -170,6 +184,45 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 				SecretKeyRef: weftServer.Spec.CloudflareTokenSecretRef,
 			},
 		})
+	}
+
+	// Reconcile PVC
+	_, err = resource.Resource(resource.Options{
+		Name: fmt.Sprintf("pvc/%s", pvc.Name),
+		Log:  func(v ...any) { log.Info(fmt.Sprint(v...)) },
+		Exists: func() bool {
+			return r.Get(ctx, client.ObjectKeyFromObject(pvc), pvc) == nil
+		},
+		ShouldExist: func() bool {
+			return weftServer.Spec.Location != weftv1alpha1.WeftServerLocationExternal
+		},
+		IsUpToDate: func() bool {
+			// PVCs are immutable usually, but we can check size? For now, assume existing is fine.
+			return true
+		},
+		Create: func() error {
+			_, err := controllerutil.CreateOrUpdate(ctx, r.Client, pvc, func() error {
+				pvc.Spec.AccessModes = []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}
+				pvc.Spec.Resources = corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceStorage: k8sresource.MustParse("1Gi"),
+					},
+				}
+				return controllerutil.SetOwnerReference(&weftServer, pvc, r.Scheme)
+			})
+			return err
+		},
+		Update: func() error {
+			// Generally no-op for PVC
+			return nil
+		},
+		Delete: func() error {
+			return r.Delete(ctx, pvc)
+		},
+	})
+	if err != nil {
+		log.Error(err, "Failed to reconcile PVC")
+		return ctrl.Result{}, r.updateWeftServerStatus(ctx, &weftServer, err)
 	}
 
 	// Reconcile Deployment
@@ -191,15 +244,32 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 					MatchLabels: labels,
 				}
 				dep.Spec.Replicas = int32Ptr(1)
+				dep.Spec.Strategy.Type = appsv1.RecreateDeploymentStrategyType
 				dep.Spec.Template.ObjectMeta.Labels = labels
 				dep.Spec.Template.Spec.HostNetwork = true
+				dep.Spec.Template.Spec.Volumes = []corev1.Volume{
+					{
+						Name: "certs",
+						VolumeSource: corev1.VolumeSource{
+							PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+								ClaimName: pvc.Name,
+							},
+						},
+					},
+				}
 				dep.Spec.Template.Spec.Containers = []corev1.Container{
 					{
 						Name:            "server",
 						Image:           "ghcr.io/aquaduct-dev/weft:latest", // TODO: Versioning
-						Command:         cmdArgs,
+						Args:            cmdArgs,
 						Env:             envVars,
 						ImagePullPolicy: corev1.PullAlways,
+						VolumeMounts: []corev1.VolumeMount{
+							{
+								Name:      "certs",
+								MountPath: certsPath,
+							},
+						},
 					},
 				}
 				return controllerutil.SetOwnerReference(&weftServer, dep, r.Scheme)
@@ -214,13 +284,29 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 				dep.Spec.Replicas = int32Ptr(1)
 				dep.Spec.Template.ObjectMeta.Labels = labels
 				dep.Spec.Template.Spec.HostNetwork = true
+				dep.Spec.Template.Spec.Volumes = []corev1.Volume{
+					{
+						Name: "certs",
+						VolumeSource: corev1.VolumeSource{
+							PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+								ClaimName: pvc.Name,
+							},
+						},
+					},
+				}
 				dep.Spec.Template.Spec.Containers = []corev1.Container{
 					{
 						Name:            "server",
 						Image:           "ghcr.io/aquaduct-dev/weft:latest", // TODO: Versioning
-						Command:         cmdArgs,
+						Args:            cmdArgs,
 						Env:             envVars,
 						ImagePullPolicy: corev1.PullAlways,
+						VolumeMounts: []corev1.VolumeMount{
+							{
+								MountPath: certsPath,
+								Name:      "certs",
+							},
+						},
 					},
 				}
 				return controllerutil.SetOwnerReference(&weftServer, dep, r.Scheme)
@@ -328,17 +414,21 @@ func (r *WeftServerReconciler) updateWeftServerStatus(ctx context.Context, weftS
 		// Create weftclient and list tunnels
 		connStr := weftServer.Spec.ConnectionString
 		if weftServer.Spec.Location == weftv1alpha1.WeftServerLocationInternal {
-			// Use Service DNS for internal servers
 			u, err := url.Parse(connStr)
 			if err == nil {
-				// Host format: <ServerName>-server.<Namespace>.svc
-				host := fmt.Sprintf("%s-server.%s.svc", weftServer.Name, weftServer.Namespace)
-				port := u.Port()
-				if port == "" {
-					port = "9092"
+				svcName := fmt.Sprintf("%s-server", weftServer.Name)
+				var svc corev1.Service
+				if err := r.Client.Get(ctx, client.ObjectKey{Name: svcName, Namespace: weftServer.Namespace}, &svc); err != nil {
+					log.Error(err, "Failed to get Service for internal server", "service", svcName, "namespace", weftServer.Namespace)
+					// Fallback to original connection string if service not found
+				} else {
+					port := u.Port()
+					if port == "" {
+						port = "9092"
+					}
+					u.Host = fmt.Sprintf("%s:%s", svc.Spec.ClusterIP, port)
+					connStr = u.String()
 				}
-				u.Host = fmt.Sprintf("%s:%s", host, port)
-				connStr = u.String()
 			} else {
 				log.Error(err, "Failed to parse ConnectionString for internal URL reconstruction")
 			}

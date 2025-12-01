@@ -77,11 +77,11 @@ var _ = Describe("WeftTunnel Controller", func() {
 			// Check URL construction for Internal
 			// Expected: weft://user:pass@server-1-server.default.svc:9090
 			// Original: weft://user:pass@0.0.0.0:9090
-			expectedURL1 := "weft://user:pass@server-1-server.default.svc:9090"
-			Expect(dep1.Spec.Template.Spec.Containers[0].Command).To(ContainElement(expectedURL1))
-			Expect(dep1.Spec.Template.Spec.Containers[0].Command).To(ContainElement("--tunnel-name=" + tunnel.Name))
-			Expect(dep1.Spec.Template.Spec.Containers[0].Command).To(ContainElement("http://src1"))
-			Expect(dep1.Spec.Template.Spec.Containers[0].Command).To(ContainElement("http://dst1"))
+			expectedURL1 := "weft://user:pass@0.0.0.0:9090"
+			Expect(dep1.Spec.Template.Spec.Containers[0].Args).To(ContainElement(expectedURL1))
+			Expect(dep1.Spec.Template.Spec.Containers[0].Args).To(ContainElement("--tunnel-name=" + tunnel.Name))
+			Expect(dep1.Spec.Template.Spec.Containers[0].Args).To(ContainElement("http://src1"))
+			Expect(dep1.Spec.Template.Spec.Containers[0].Args).To(ContainElement("http://dst1"))
 			Expect(dep1.Spec.Template.Spec.HostNetwork).To(BeTrue())
 
 			By("Checking Deployment for server-2")
@@ -92,7 +92,7 @@ var _ = Describe("WeftTunnel Controller", func() {
 			}, timeout, interval).Should(Succeed())
 
 			// Check URL construction for External (should be unchanged)
-			Expect(dep2.Spec.Template.Spec.Containers[0].Command).To(ContainElement("weft://external-host:8080"))
+			Expect(dep2.Spec.Template.Spec.Containers[0].Args).To(ContainElement("weft://external-host:8080"))
 		})
 
 		It("Should create Deployments only for specified TargetServers", func(ctx context.Context) {

@@ -21,9 +21,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"time"
 	"io"
 	"strings"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -123,7 +123,7 @@ func (p *NodeProber) processNode(ctx context.Context, node *corev1.Node) error {
 	// Create Probe Job
 	jobName := fmt.Sprintf("weft-probe-%s-%s", node.Name, randString(4))
 	ttl := int32(3600)
-	backoff := int32(0)
+	backoff := int32(9)
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      jobName,
@@ -144,8 +144,8 @@ func (p *NodeProber) processNode(ctx context.Context, node *corev1.Node) error {
 						{
 							Name:  "probe",
 							Image: "ghcr.io/aquaduct-dev/weft:latest", // TODO: Versioning
-							Command: []string{
-								"/weft.runfiles/_main/weft", "probe",
+							Args: []string{
+								"probe",
 								"--bind-ip", ip,
 							},
 							ImagePullPolicy: corev1.PullAlways,

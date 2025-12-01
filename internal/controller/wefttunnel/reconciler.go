@@ -19,8 +19,6 @@ package wefttunnel
 import (
 	"context"
 	"fmt"
-	"net"
-	"net/url"
 	"slices"
 
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -144,7 +142,6 @@ func (r *WeftTunnelReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 		// Command: weft tunnel --tunnel-name=<name> <targetURL> <srcURL> <dstURL>
 		cmdArgs := []string{
-			"weft",
 			"tunnel",
 			fmt.Sprintf("--tunnel-name=%s", weftTunnel.Name),
 			targetURL,
@@ -159,12 +156,12 @@ func (r *WeftTunnelReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			}
 			dep.Spec.Replicas = int32Ptr(1)
 			dep.Spec.Template.ObjectMeta.Labels = labels
-			dep.Spec.Template.Spec.HostNetwork = true
+			dep.Spec.Strategy.Type = appsv1.RecreateDeploymentStrategyType
 			dep.Spec.Template.Spec.Containers = []corev1.Container{
 				{
 					Name:            "tunnel",
 					Image:           "ghcr.io/aquaduct-dev/weft:latest", // TODO: Versioning
-					Command:         cmdArgs,
+					Args:            cmdArgs,
 					ImagePullPolicy: corev1.PullAlways,
 				},
 			}
@@ -262,26 +259,6 @@ func (r *WeftTunnelReconciler) updateStatus(ctx context.Context, weftTunnel *wef
 }
 
 func (r *WeftTunnelReconciler) constructTargetURL(srv *weftv1alpha1.WeftServer) (string, error) {
-	if srv.Spec.Location == weftv1alpha1.WeftServerLocationInternal {
-		u, err := url.Parse(srv.Spec.ConnectionString)
-		if err != nil {
-			return "", err
-		}
-
-		// Replace host with service DNS
-		// Service name convention: <server-name>-server
-		svcName := fmt.Sprintf("%s-server", srv.Name)
-		// Namespace convention: same as server (usually)
-		svcDNS := fmt.Sprintf("%s.%s.svc", svcName, srv.Namespace)
-
-		// Preserve port if present
-		if _, port, _ := net.SplitHostPort(u.Host); port != "" {
-			u.Host = fmt.Sprintf("%s:%s", svcDNS, port)
-		} else {
-			u.Host = svcDNS
-		}
-		return u.String(), nil
-	}
 	return srv.Spec.ConnectionString, nil
 }
 

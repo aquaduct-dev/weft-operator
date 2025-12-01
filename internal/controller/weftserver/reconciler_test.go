@@ -86,6 +86,9 @@ var _ = Describe("WeftServer Controller", func() {
 			Expect(dep.Spec.Template.Spec.Containers[0].Command).To(ContainElement("weft"))
 			Expect(dep.Spec.Template.Spec.Containers[0].Command).To(ContainElement("server"))
 			Expect(dep.Spec.Template.Spec.Containers[0].Command).To(ContainElement("--bind-ip=0.0.0.0"))
+			Expect(dep.Spec.Template.Spec.Containers[0].Command).To(ContainElement("--certs-cache-path=/var/lib/weft/certs"))
+			Expect(dep.Spec.Template.Spec.Volumes).To(ContainElement(HaveField("Name", "certs")))
+			Expect(dep.Spec.Template.Spec.Containers[0].VolumeMounts).To(ContainElement(HaveField("MountPath", "/var/lib/weft/certs")))
 
 			By("Checking Service")
 			svc := &corev1.Service{}
@@ -93,6 +96,13 @@ var _ = Describe("WeftServer Controller", func() {
 				return k8sClient.Get(ctx, types.NamespacedName{Name: "test-server-internal-server", Namespace: "default"}, svc)
 			}, timeout, interval).Should(Succeed())
 			Expect(svc.Spec.Ports[0].Port).To(Equal(int32(8081)))
+
+			By("Checking PVC")
+			pvc := &corev1.PersistentVolumeClaim{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{Name: "test-server-internal-certs", Namespace: "default"}, pvc)
+			}, timeout, interval).Should(Succeed())
+			Expect(pvc.Spec.AccessModes).To(ContainElement(corev1.ReadWriteOnce))
 
 			By("Checking Status")
 			updatedWs := &weftv1alpha1.WeftServer{}

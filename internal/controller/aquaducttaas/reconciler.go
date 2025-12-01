@@ -33,9 +33,9 @@ type AquaductTaaSReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-//+kubebuilder:rbac:groups=weft.aquaduct.dev,resources=aquaducttaas,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=weft.aquaduct.dev,resources=aquaducttaas/status,verbs=get;update;patch
-//+kubebuilder:rbac:groups=weft.aquaduct.dev,resources=aquaducttaas/finalizers,verbs=update
+//+kubebuilder:rbac:groups=weft.aquaduct.dev,resources=aquaducttaases,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=weft.aquaduct.dev,resources=aquaducttaases/status,verbs=get;update;patch
+//+kubebuilder:rbac:groups=weft.aquaduct.dev,resources=aquaducttaases/finalizers,verbs=update
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
