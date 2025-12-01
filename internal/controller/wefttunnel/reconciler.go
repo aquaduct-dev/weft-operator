@@ -19,6 +19,7 @@ package wefttunnel
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"slices"
 
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -259,6 +260,29 @@ func (r *WeftTunnelReconciler) updateStatus(ctx context.Context, weftTunnel *wef
 }
 
 func (r *WeftTunnelReconciler) constructTargetURL(srv *weftv1alpha1.WeftServer) (string, error) {
+	if srv.Spec.Location == weftv1alpha1.WeftServerLocationInternal {
+		// For internal WeftServers, the tunnel should connect to the Kubernetes Service
+		// created for the WeftServer, not the IP specified in the connection string.
+		u, err := url.Parse(srv.Spec.ConnectionString)
+		if err != nil {
+			return "", fmt.Errorf("failed to parse connection string for internal server %s: %w", srv.Name, err)
+		}
+
+		serviceName := fmt.Sprintf("%s-server", srv.Name)
+		serviceHost := fmt.Sprintf("%s.%s.svc.cluster.local", serviceName, srv.Namespace)
+
+		// Save the port before modifying u.Host
+		port := u.Port()
+		if port == "" {
+			// Default port if not specified in the original connection string
+			port = "8080" // Assuming 8080 is the default for weftserver
+		}
+
+		// Reconstruct the URL with the service host and the original/defaulted port
+		u.Host = fmt.Sprintf("%s:%s", serviceHost, port)
+		return u.String(), nil
+	}
+	// For external WeftServers, use the connection string as is
 	return srv.Spec.ConnectionString, nil
 }
 

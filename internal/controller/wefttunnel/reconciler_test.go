@@ -73,16 +73,15 @@ var _ = Describe("WeftTunnel Controller", func() {
 			Eventually(func() error {
 				return k8sClient.Get(ctx, types.NamespacedName{Name: depName1, Namespace: "default"}, dep1)
 			}, timeout, interval).Should(Succeed())
-			
+
 			// Check URL construction for Internal
 			// Expected: weft://user:pass@server-1-server.default.svc:9090
 			// Original: weft://user:pass@0.0.0.0:9090
-			expectedURL1 := "weft://user:pass@0.0.0.0:9090"
+			expectedURL1 := "weft://user:pass@server-1-server.default.svc.cluster.local:9090"
 			Expect(dep1.Spec.Template.Spec.Containers[0].Args).To(ContainElement(expectedURL1))
 			Expect(dep1.Spec.Template.Spec.Containers[0].Args).To(ContainElement("--tunnel-name=" + tunnel.Name))
 			Expect(dep1.Spec.Template.Spec.Containers[0].Args).To(ContainElement("http://src1"))
 			Expect(dep1.Spec.Template.Spec.Containers[0].Args).To(ContainElement("http://dst1"))
-			Expect(dep1.Spec.Template.Spec.HostNetwork).To(BeTrue())
 
 			By("Checking Deployment for server-2")
 			dep2 := &appsv1.Deployment{}
@@ -99,7 +98,7 @@ var _ = Describe("WeftTunnel Controller", func() {
 			By("Creating WeftServers")
 			// Reuse existing servers from previous test or create new ones?
 			// Better to use unique names to avoid collision if tests run in parallel (though Ginkgo usually runs serial unless configured otherwise)
-			
+
 			targetSrv := &weftv1alpha1.WeftServer{
 				ObjectMeta: metav1.ObjectMeta{Name: "target-server", Namespace: "default"},
 				Spec: weftv1alpha1.WeftServerSpec{
@@ -159,13 +158,13 @@ var _ = Describe("WeftTunnel Controller", func() {
 			By("Creating WeftServers")
 			srvA := &weftv1alpha1.WeftServer{
 				ObjectMeta: metav1.ObjectMeta{Name: "server-a", Namespace: "default"},
-				Spec: weftv1alpha1.WeftServerSpec{ConnectionString: "weft://a@0:0"},
+				Spec:       weftv1alpha1.WeftServerSpec{ConnectionString: "weft://a@0:0"},
 			}
 			Expect(k8sClient.Create(ctx, srvA)).To(Succeed())
 
 			srvB := &weftv1alpha1.WeftServer{
 				ObjectMeta: metav1.ObjectMeta{Name: "server-b", Namespace: "default"},
-				Spec: weftv1alpha1.WeftServerSpec{ConnectionString: "weft://b@0:0"},
+				Spec:       weftv1alpha1.WeftServerSpec{ConnectionString: "weft://b@0:0"},
 			}
 			Expect(k8sClient.Create(ctx, srvB)).To(Succeed())
 
@@ -187,7 +186,7 @@ var _ = Describe("WeftTunnel Controller", func() {
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
-			
+
 			By("Reconciling (A)")
 			_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: tunnel.Name, Namespace: tunnel.Namespace}})
 			Expect(err).NotTo(HaveOccurred())

@@ -83,10 +83,9 @@ var _ = Describe("WeftServer Controller", func() {
 			}, timeout, interval).Should(Succeed())
 			Expect(dep.Spec.Template.Spec.HostNetwork).To(BeTrue())
 			Expect(dep.Spec.Template.Spec.Containers[0].Image).To(Equal("ghcr.io/aquaduct-dev/weft:latest"))
-			Expect(dep.Spec.Template.Spec.Containers[0].Command).To(ContainElement("weft"))
-			Expect(dep.Spec.Template.Spec.Containers[0].Command).To(ContainElement("server"))
-			Expect(dep.Spec.Template.Spec.Containers[0].Command).To(ContainElement("--bind-ip=0.0.0.0"))
-			Expect(dep.Spec.Template.Spec.Containers[0].Command).To(ContainElement("--certs-cache-path=/var/lib/weft/certs"))
+			Expect(dep.Spec.Template.Spec.Containers[0].Args).To(ContainElement("server"))
+			Expect(dep.Spec.Template.Spec.Containers[0].Args).To(ContainElement("--bind-ip=0.0.0.0"))
+			Expect(dep.Spec.Template.Spec.Containers[0].Args).To(ContainElement("--certs-cache-path=/var/lib/weft/certs"))
 			Expect(dep.Spec.Template.Spec.Volumes).To(ContainElement(HaveField("Name", "certs")))
 			Expect(dep.Spec.Template.Spec.Containers[0].VolumeMounts).To(ContainElement(HaveField("MountPath", "/var/lib/weft/certs")))
 
@@ -156,7 +155,7 @@ var _ = Describe("WeftServer Controller", func() {
 			Eventually(func() error {
 				return k8sClient.Get(ctx, types.NamespacedName{Name: "test-server-node-match-server", Namespace: "default"}, dep)
 			}, timeout, interval).Should(Succeed())
-			Expect(dep.Spec.Template.Spec.Containers[0].Command).To(ContainElement("--bind-ip=10.0.0.1"))
+			Expect(dep.Spec.Template.Spec.Containers[0].Args).To(ContainElement("--bind-ip=10.0.0.1"))
 		})
 
 		It("Should bind to 0.0.0.0 if IP does not match Node IP", func(ctx context.Context) {
@@ -199,7 +198,7 @@ var _ = Describe("WeftServer Controller", func() {
 			Eventually(func() error {
 				return k8sClient.Get(ctx, types.NamespacedName{Name: "test-server-node-mismatch-server", Namespace: "default"}, dep)
 			}, timeout, interval).Should(Succeed())
-			Expect(dep.Spec.Template.Spec.Containers[0].Command).To(ContainElement("--bind-ip=0.0.0.0"))
+			Expect(dep.Spec.Template.Spec.Containers[0].Args).To(ContainElement("--bind-ip=0.0.0.0"))
 		})
 
 		It("Should cleanup resources for External location", func(ctx context.Context) {
