@@ -275,7 +275,7 @@ func (r *WeftTunnelReconciler) constructTargetURL(srv *weftv1alpha1.WeftServer) 
 		port := u.Port()
 		if port == "" {
 			// Default port if not specified in the original connection string
-			port = "8080" // Assuming 8080 is the default for weftserver
+			port = "9092" // Assuming 9092 is the default for weftserver
 		}
 
 		// Reconstruct the URL with the service host and the original/defaulted port
