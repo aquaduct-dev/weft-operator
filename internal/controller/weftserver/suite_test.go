@@ -68,10 +68,11 @@ var _ = BeforeSuite(func() {
 	testSrcDir := os.Getenv("TEST_SRCDIR")
 
 	// Path to CRDs, relative to the test binary's runfiles
-	crdDirectory = filepath.Join(testSrcDir, "_main", "chart", "templates", "crds")
+	chartCrdDirectory := filepath.Join(testSrcDir, "_main", "chart", "templates", "crds")
+	genCrdDirectory := filepath.Join(testSrcDir, "_main", "api", "v1alpha1", "crds")
 
 	testEnv = &envtest.Environment{
-		CRDDirectoryPaths:     []string{crdDirectory},
+		CRDDirectoryPaths:     []string{chartCrdDirectory, genCrdDirectory},
 		ErrorIfCRDPathMissing: true,
 	}
 

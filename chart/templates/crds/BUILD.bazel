@@ -1,4 +1,3 @@
-
 filegroup(
     name = "gateway_crds",
     srcs = ["gateway-api.yaml"],

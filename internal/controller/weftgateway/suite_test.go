@@ -17,8 +17,8 @@ limitations under the License.
 package weftgateway_test
 
 import (
-	"context"
-	"os" // Added os import
+	"context" // Added os import
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -64,10 +64,12 @@ var _ = BeforeSuite(func() {
 	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
 
 	By("bootstrapping test environment")
+	testSrcDir := os.Getenv("TEST_SRCDIR")
+	chartCrdDirectory := filepath.Join(testSrcDir, "_main", "chart", "templates", "crds")
+	genCrdDirectory := filepath.Join(testSrcDir, "_main", "api", "v1alpha1", "crds")
+
 	testEnv = &envtest.Environment{
-		CRDDirectoryPaths: []string{
-			filepath.Join(os.Getenv("TEST_SRCDIR"), "_main", "chart", "templates", "crds"),
-		},
+		CRDDirectoryPaths:     []string{chartCrdDirectory, genCrdDirectory},
 		ErrorIfCRDPathMissing: true,
 	}
 

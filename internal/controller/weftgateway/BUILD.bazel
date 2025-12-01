@@ -35,11 +35,14 @@ go_test(
         "suite_test.go",
     ],
     data = [
+        "//api/v1alpha1:generated.crds",
         "//chart/templates/crds:gateway_crds",
-        "//chart/templates/crds:generated.crds",
+        "//tools/envtest:etcd",
+        "//tools/envtest:kube-apiserver",
+        "//tools/envtest:kubectl",
     ],
     env = {
-        "KUBEBUILDER_ASSETS": "/home/rohit/.local/share/kubebuilder-envtest/k8s/1.29.0-linux-amd64",
+        "KUBEBUILDER_ASSETS": "../../../$(rootpath //tools/envtest:etcd)/..",
     },
     deps = [
         ":weftgateway",
@@ -56,7 +59,7 @@ go_test(
         "@io_k8s_sigs_controller_runtime//pkg/envtest",
         "@io_k8s_sigs_controller_runtime//pkg/log",
         "@io_k8s_sigs_controller_runtime//pkg/log/zap",
-        "@io_k8s_sigs_gateway_api//apis/v1:apis",
         "@io_k8s_sigs_controller_runtime//pkg/metrics/server",
+        "@io_k8s_sigs_gateway_api//apis/v1:apis",
     ],
 )

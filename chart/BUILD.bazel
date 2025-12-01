@@ -1,7 +1,5 @@
 load("@rules_helm//helm:defs.bzl", "helm_chart")
 
-
-
 helm_chart(
     name = "weft_operator",
     chart = "Chart.yaml",

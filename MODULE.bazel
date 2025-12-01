@@ -33,7 +33,7 @@ go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
 # go_sdk.from_file(go_mod = "//:go.mod")
 go_sdk.download(
     name = "go_sdk_custom",
-    version = "1.24.1",
+    version = "1.25.0",
 )
 use_repo(go_sdk, "go_sdk_custom")
 
@@ -83,4 +83,12 @@ use_repo(
     "alpine",
     "alpine_linux_amd64",
     "alpine_linux_arm64_v8",
+)
+
+http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
+
+http_file(
+    name = "envtest_tgz",
+    sha256 = "000c9adc2c140bed3f73e28caabdfa82d76d7c35c4b0cf93322d0fcbc1f28a070962e928c9132ea6b60c02ed677a7449cfab0b91134971419a21dab65ce5781e",
+    url = "https://github.com/kubernetes-sigs/controller-tools/releases/download/envtest-v1.28.0/envtest-v1.28.0-linux-amd64.tar.gz",
 )
