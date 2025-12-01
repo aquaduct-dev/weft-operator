@@ -3,28 +3,14 @@ load("//tools/controller-gen:defs.bzl", "controller_gen")
 
 controller_gen(
     name = "generated",
-    srcs = glob(
-        ["*.go"],
-        exclude = ["zz_generated.deepcopy.go"],
-    ) + [
-        "//:go.mod",
-        "//:go.sum",
+    srcs = [
+        ":api_types",
         "//internal/controller/aquaducttaas:srcs",
         "//internal/controller/weftgateway:srcs",
         "//internal/controller/weftserver:srcs",
         "//internal/controller/wefttunnel:srcs",
         "//internal/resource:srcs",
     ],
-    deepcopy_out = "zz_generated.deepcopy.go",
-    paths = [
-        "./api/v1alpha1",
-        "./internal/controller/aquaducttaas",
-        "./internal/resource",
-        "./internal/controller/weftgateway",
-        "./internal/controller/weftserver",
-        "./internal/controller/wefttunnel",
-    ],
-    rbac_outs = ["role.yaml"],
     visibility = ["//visibility:public"],
 )
 

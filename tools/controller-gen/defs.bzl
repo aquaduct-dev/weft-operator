@@ -21,14 +21,18 @@ def _controller_gen_impl(ctx):
         go.sdk.headers,
         go.sdk.tools,
     ])
-    
+
     tool = ctx.executable._tool
-    
+
+    dir_outs = []
+    for d in ctx.attr.dirs:
+        dir_outs.append(ctx.actions.declare_directory(d))
+
     # Space separated list of output paths
-    output_paths = " ".join([f.path for f in ctx.outputs.outs])
+    output_paths = " ".join([f.path for f in ctx.outputs.outs] + [f.path for f in dir_outs])
 
     ctx.actions.run_shell(
-        outputs = ctx.outputs.outs,
+        outputs = ctx.outputs.outs + dir_outs,
         inputs = depset(ctx.files.srcs + [go.go], transitive = [sdk_files]),
         tools = [tool],
         command = """
@@ -53,11 +57,17 @@ def _controller_gen_impl(ctx):
             for out in $outputs; do
                 base=$(basename "$out")
                 # Find the generated file. We assume it's in the current directory or subdirectories.
-                found=$(find . -name "$base" -type f | head -n 1)
-                
+                found=$(find . -name "$base" | head -n 1)
                 if [ -n "$found" ]; then
                     # echo "Moving $found to $out"
-                    cp "$found" "$out"
+                    if [ -d "$found" ]; then
+                        for f in $(ls $found); do
+                            cp "$found/$f" "$out/$f"
+                        done
+                    
+                    else
+                        cp -r "$found" "$out"
+                    fi
                 else
                     echo "Error: Expected output $base not generated."
                     echo "Available files:"
@@ -76,13 +86,14 @@ def _controller_gen_impl(ctx):
         env = env,
     )
 
-    return [DefaultInfo(files = depset(ctx.outputs.outs))]
+    return [DefaultInfo(files = depset(ctx.outputs.outs+dir_outs))]
 
 controller_gen_rule = rule(
     implementation = _controller_gen_impl,
     attrs = {
         "srcs": attr.label_list(allow_files = True),
         "outs": attr.output_list(mandatory = True),
+        "dirs": attr.string_list(),
         "args": attr.string_list(),
         "_tool": attr.label(
             default = Label("//tools/controller-gen:controller-gen"),
@@ -96,58 +107,52 @@ controller_gen_rule = rule(
     toolchains = ["@rules_go//go:toolchain"],
 )
 
-def controller_gen(name, srcs, 
-                   deepcopy_out = None,
-                   rbac_outs = [],
-                   crd_outs = [],
-                   webhook_outs = [],
-                   paths = [],
-                   deepcopy_args = ["object:headerFile=/dev/null"],
-                   rbac_args = ["rbac:roleName=manager-role"],
-                   crd_args = ["crd"],
-                   webhook_args = ["webhook"],
-                   **kwargs):
-    
+def controller_gen(
+        name,
+        srcs,
+        crd_outs = [],
+        webhook_outs = [],
+        override_paths = [],
+        deepcopy_args = ["object:headerFile=/dev/null"],
+        rbac_args = ["rbac:roleName=manager-role"],
+        crd_args = ["crd"],
+        webhook_args = ["webhook"],
+        **kwargs):
     # Calculate paths arg
-    paths_arg = ["paths={"+",".join(paths)+"}"]
-    has_paths = len(paths) > 0
-    
-    if not has_paths:
-        paths_arg = ["paths=./" + native.package_name()]
-        
-    final_paths_arg = paths_arg # This is either user's paths or default paths
-    
+    paths = set()
+    if override_paths == []:
+        for src in srcs:
+            pkg = native.package_relative_label(src).package
+            if pkg != "" and pkg != "tools/controller-gen":
+                paths.add("./" + pkg)
+    else:
+        paths = override_paths
+    paths_arg = ["paths={" + ",".join(paths) + "}"]
+
     # Helper to create rule
-    def create_rule(suffix, outs, specific_args):
-        if not outs:
-            return
-        
+    def create_rule(suffix,  specific_args,outs=[], dirs=[]):
         # Output dir args
         # We add output configuration to ensure generated files are found easily in the root of execution
         extra_args = []
         if suffix == "rbac":
             extra_args.append("output:rbac:artifacts:config=.")
         elif suffix == "crds":
-            extra_args.append("output:crd:dir=.")
+            extra_args.append("output:crd:dir=./crds")
         elif suffix == "webhook":
             extra_args.append("output:webhook:dir=.")
-            
+
         controller_gen_rule(
             name = name + "." + suffix,
-            srcs = srcs,
+            srcs = srcs + [native.repo_name() + "//:go.mod", native.repo_name() + "//:go.sum"],
             outs = outs,
-            args = specific_args + final_paths_arg + extra_args,
+            dirs = dirs,
+            args = specific_args + paths_arg + extra_args,
             **kwargs
         )
 
-    if deepcopy_out:
-        create_rule("deepcopy", [deepcopy_out], deepcopy_args)
-        
-    if rbac_outs:
-        create_rule("rbac", rbac_outs, rbac_args)
-        
-    if crd_outs:
-        create_rule("crds", crd_outs, crd_args)
-        
+    create_rule("deepcopy", deepcopy_args, outs=["zz_generated.deepcopy.go"])
+    create_rule("rbac", rbac_args, outs=["role.yaml"])
+    create_rule("crds", crd_args, dirs=["crds"])
+
     if webhook_outs:
         create_rule("webhook", webhook_outs, webhook_args)

@@ -1,24 +1,17 @@
 load("@rules_helm//helm:defs.bzl", "helm_chart")
 
-genrule(
-    name = "copy_role",
-    srcs = ["//api/v1alpha1:generated.rbac"],
-    outs = ["templates/role.yaml"],
-    cmd = "cp $< $@",
-)
+
 
 helm_chart(
     name = "weft_operator",
     chart = "Chart.yaml",
     crds = [
-        "//chart/templates/crds:generated.crds",
+        "//api/v1alpha1:generated.crds",
         "//chart/templates/crds:gateway_crds",
     ],
     images = ["//cmd:weft_operator_image_push"],
     registry_url = "oci://ghcr.io/aquaduct-dev/charts",
-    templates = glob(["templates/**"]) + [
-        ":copy_role",
-    ],
+    templates = ["//chart/templates"],
     upgrade_opts = [
         "--namespace=weft-system",
         "--install",

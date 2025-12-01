@@ -1,0 +1,12 @@
+genrule(
+    name = "copy_role",
+    srcs = ["//api/v1alpha1:generated.rbac"],
+    outs = ["role.yaml"],
+    cmd = "cp $< $@",
+)
+
+filegroup(
+    name = "templates",
+    srcs = glob(["*.yaml"]) + [":copy_role"],
+    visibility = ["//visibility:public"],
+)

@@ -1,33 +1,3 @@
-load("//tools/controller-gen:defs.bzl", "controller_gen")
-
-controller_gen(
-    name = "generated",
-    srcs = [
-        "//:go.mod",
-        "//:go.sum",
-        "//api/v1alpha1:api_types",
-        "//internal/controller/aquaducttaas:srcs",
-        "//internal/controller/weftgateway:srcs",
-        "//internal/controller/weftserver:srcs",
-        "//internal/controller/wefttunnel:srcs",
-        "//internal/resource:srcs",
-    ],
-    crd_outs = [
-        "weft.aquaduct.dev_aquaducttaases.yaml",
-        "weft.aquaduct.dev_weftgateways.yaml",
-        "weft.aquaduct.dev_weftservers.yaml",
-        "weft.aquaduct.dev_wefttunnels.yaml",
-    ],
-    paths = [
-        "./api/v1alpha1",
-        "./internal/controller/aquaducttaas",
-        "./internal/controller/weftgateway",
-        "./internal/controller/weftserver",
-        "./internal/controller/wefttunnel",
-        "./internal/resource",
-    ],
-    visibility = ["//visibility:public"],
-)
 
 filegroup(
     name = "gateway_crds",
