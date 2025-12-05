@@ -1,5 +1,5 @@
-load("@rules_go//go:def.bzl", "go_binary", "go_library")
-load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load", "oci_push")
+load("@rules_go//go:def.bzl", "go_binary", "go_cross_binary", "go_library")
+load("@rules_oci//oci:defs.bzl", "oci_image", "oci_image_index", "oci_load", "oci_push")
 load("@rules_pkg//:pkg.bzl", "pkg_tar")
 
 go_library(
@@ -27,22 +27,56 @@ go_library(
 )
 
 go_binary(
-    name = "cmd",
+    name = "cmd_raw",
     embed = [":cmd_lib"],
     pure = "on",
     visibility = ["//visibility:public"],
 )
 
+go_cross_binary(
+    name = "cmd_amd64",
+    platform = "@rules_go//go/toolchain:linux_amd64",
+    target = ":cmd_raw",
+    visibility = ["//visibility:public"],
+)
+
+go_cross_binary(
+    name = "cmd_arm64",
+    platform = "@rules_go//go/toolchain:linux_arm64",
+    target = ":cmd_raw",
+    visibility = ["//visibility:public"],
+)
+
 pkg_tar(
-    name = "layer",
-    srcs = [":cmd"],
+    name = "layer_amd64",
+    srcs = [":cmd_amd64"],
+)
+
+pkg_tar(
+    name = "layer_arm64",
+    srcs = [":cmd_arm64"],
 )
 
 oci_image(
+    name = "weft_operator_image_amd64",
+    base = "@alpine_linux_amd64",
+    entrypoint = ["/cmd_amd64"],
+    tars = [":layer_amd64"],
+)
+
+oci_image(
+    name = "weft_operator_image_arm64",
+    base = "@alpine_linux_arm64_v8",
+    entrypoint = ["/cmd_arm64"],
+    tars = [":layer_arm64"],
+)
+
+oci_image_index(
     name = "weft_operator_image",
-    base = "@alpine",
-    entrypoint = ["/cmd"],
-    tars = [":layer"],
+    images = [
+        ":weft_operator_image_amd64",
+        ":weft_operator_image_arm64",
+    ],
 )
 
 oci_push(
@@ -54,7 +88,7 @@ oci_push(
 
 oci_load(
     name = "weft_operator_image_load",
-    image = ":weft_operator_image",
+    image = ":weft_operator_image_amd64",
     repo_tags = ["ghcr.io/aquaduct-dev/weft-operator:latest"],
     # For local development, it's often useful to have an alias to load into Docker.
     # The image will be tagged as ghcr.io/aquaduct-dev/weft-operator:latest in the local docker daemon.
