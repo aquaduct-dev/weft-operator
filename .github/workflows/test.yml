@@ -1,0 +1,48 @@
+name: Test
+
+on:
+  push:
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Calculate previous run number
+        id: calc_prev_run
+        run: echo "number=$((${{ github.run_number }} - 1))" >> $GITHUB_OUTPUT
+
+      - name: Restore Bazel cache
+        uses: actions/cache/restore@v4
+        with:
+          path: "/home/runner/.cache/bazel"
+          key: bazel-test-${{ steps.calc_prev_run.outputs.number }}
+          restore-keys: |
+            bazel-test-
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Java (required by Bazel)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Bazelisk
+        run: |
+          sudo curl -L -o /usr/local/bin/bazelisk https://github.com/bazelbuild/bazelisk/releases/download/v1.13.0/bazelisk-linux-amd64
+          sudo chmod +x /usr/local/bin/bazelisk
+          bazelisk --version
+
+      - name: Test all
+        run: |
+          bazelisk test //...
+
+      - name: Save Bazel cache
+        uses: actions/cache/save@v4
+        with:
+          path: "/home/runner/.cache/bazel"
+          key: bazel-test-${{ github.run_number }}
