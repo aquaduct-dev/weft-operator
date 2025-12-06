@@ -1,5 +1,7 @@
 # Weft Operator
 
+[![Test](https://github.com/aquaduct-dev/weft-operator/actions/workflows/test.yml/badge.svg)](https://github.com/aquaduct-dev/weft-operator/actions/workflows/test.yml) [![Release](https://github.com/aquaduct-dev/weft-operator/actions/workflows/release.yml/badge.svg)](https://github.com/aquaduct-dev/weft-operator/actions/workflows/release.yml)
+
 This repo contains code for the Weft operator.  
 
 The `weft` Operator is designed to make exposing a Kubernetes homelab to the internet easy.  
