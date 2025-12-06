@@ -39,7 +39,7 @@ jobs:
 
       - name: Test all
         run: |
-          bazelisk test //...
+          bazelisk test --test_output=streamed //...
 
       - name: Save Bazel cache
         uses: actions/cache/save@v4
