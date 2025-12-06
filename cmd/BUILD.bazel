@@ -34,7 +34,7 @@ go_binary(
 )
 
 go_cross_binary(
-    name = "cmd_amd64",
+    name = "cmd",
     platform = "@rules_go//go/toolchain:linux_amd64",
     target = ":cmd_raw",
     visibility = ["//visibility:public"],
@@ -49,7 +49,7 @@ go_cross_binary(
 
 pkg_tar(
     name = "layer_amd64",
-    srcs = [":cmd_amd64"],
+    srcs = [":cmd"],
 )
 
 pkg_tar(
@@ -60,7 +60,7 @@ pkg_tar(
 oci_image(
     name = "weft_operator_image_amd64",
     base = "@alpine_linux_amd64",
-    entrypoint = ["/cmd_amd64"],
+    entrypoint = ["/cmd"],
     tars = [":layer_amd64"],
 )
 
