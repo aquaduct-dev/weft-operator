@@ -10,11 +10,44 @@ It invokes the `weft` CLI by using container `ghcr.io/aquaduct-dev/weft` with sp
 
 ## Quick Start
 
+### Installation
+
 To install the `weft-operator` using Helm, run the following command:
 
 ```bash
 helm install weft-operator oci://ghcr.io/aquaduct-dev/charts/weft-operator:latest
 ```
+
+### Anatomy of a Weft Tunnel
+
+Weft allows requests from the internet to hit a **Weft server**, which serves as a frontend for potentially many services.  The **Weft server** is connected over WireGuard to one **Weft tunnel** per service.
+
+When a user requests a specific resource on the **Weft server**:
+1. The **Weft server**  identifies which WireGuard address is serving the request.
+2. The request is proxied to the **Weft tunnel** on that WireGuard address.
+3. The **Weft tunnel** proxies the request to the ultimate backend.
+3. The response is proxied back.
+
+### Required Network Configuration
+
+At least one node in your cluster must be publically accessible from the internet.  On a home network, this is generally accomplished by setting a DMZ host or opening all ports.  If a host is set up correctly, Weft will automatically use it to run a bastion.
+
+### Your first Weft Tunnel
+
+To expose service `service` in namespace `ns` on `https://example.com`, create the following CRD:
+
+```yaml
+apiVersion: weft.aquaduct.dev/v1alpha1
+kind: WeftTunnel
+metadata:
+  name: example-tunnel
+  namespace: default
+spec:
+  srcURL: "http://service.ns.svc.cluster.local:8080"
+  dstURL: "https://example.com"
+```
+
+If domain `example.com` points to the server IP, after a minute you will be able to view `service` through that domain with HTTPS set up.
 
 ## CRDs
 
@@ -43,7 +76,7 @@ The command for the deployment is `weft server --connection-secret=<connection_s
 #### Scheduled Listener for `weft probe`
 This reconciler must also periodically (every 3h) run `weft probe` on each node in `host` networking mode.  This command determines if the node is an internet-routable `WeftServer` candidate.
 
-If a node is internet-routable, the reconciler should automatically create a `WeftServer` CR on it, with a random 10-character connection secret and `--bind-ip` set to the IP
+If a node is internet-routable, the reconciler should automatically create a `WeftServer` on it with a random 10-character connection secret.
 
 #### Example
 
