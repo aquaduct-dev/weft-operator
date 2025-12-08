@@ -63,6 +63,9 @@ func (p *NodeProber) Start(ctx context.Context) error {
 	if err := p.probeNodes(ctx); err != nil {
 		log.Error(err, "Failed to run initial probe cycle")
 	}
+	if err := p.cleanupOrphanedServers(ctx); err != nil {
+		log.Error(err, "Failed to run initial cleanup cycle")
+	}
 
 	ticker := time.NewTicker(ProbeInterval)
 	defer ticker.Stop()
@@ -73,11 +76,48 @@ func (p *NodeProber) Start(ctx context.Context) error {
 			if err := p.probeNodes(ctx); err != nil {
 				log.Error(err, "Failed to run probe cycle")
 			}
+			if err := p.cleanupOrphanedServers(ctx); err != nil {
+				log.Error(err, "Failed to run cleanup cycle")
+			}
 		case <-ctx.Done():
 			log.Info("Stopping Node Prober")
 			return nil
 		}
 	}
+}
+
+func (p *NodeProber) cleanupOrphanedServers(ctx context.Context) error {
+	log := log.FromContext(ctx).WithName("node-prober")
+
+	// List all nodes first for efficiency
+	var nodeList corev1.NodeList
+	if err := p.Client.List(ctx, &nodeList); err != nil {
+		return fmt.Errorf("failed to list nodes: %w", err)
+	}
+	existingNodes := make(map[string]bool)
+	for _, node := range nodeList.Items {
+		existingNodes[node.Name] = true
+	}
+
+	var wsList weftv1alpha1.WeftServerList
+	if err := p.Client.List(ctx, &wsList); err != nil {
+		return fmt.Errorf("failed to list WeftServers: %w", err)
+	}
+
+	for _, ws := range wsList.Items {
+		nodeName, ok := ws.Labels["weft.aquaduct.dev/node"]
+		if !ok {
+			continue
+		}
+
+		if !existingNodes[nodeName] {
+			log.Info("Deleting WeftServer for missing node", "weftServer", ws.Name, "namespace", ws.Namespace, "node", nodeName)
+			if err := p.Client.Delete(ctx, &ws); err != nil {
+				log.Error(err, "Failed to delete WeftServer", "weftServer", ws.Name, "namespace", ws.Namespace)
+			}
+		}
+	}
+	return nil
 }
 
 func (p *NodeProber) probeNodes(ctx context.Context) error {
