@@ -45,6 +45,24 @@ This reconciler must also periodically (every 3h) run `weft probe` on each node 
 
 If a node is internet-routable, the reconciler should automatically create a `WeftServer` CR on it, with a random 10-character connection secret and `--bind-ip` set to the IP
 
+#### Example
+
+```yaml
+apiVersion: weft.aquaduct.dev/v1alpha1
+kind: WeftServer
+metadata:
+  name: example-weftserver
+  namespace: default
+spec:
+  # Connection string in format weft://<secret>@<bind_ip>:<port>
+  connectionString: "weft://mysecret@192.168.1.100:8080"
+  location: Internal
+  # Optional: Cloudflare token for DNS updates
+  # cloudflareTokenSecretRef:
+  #   name: cloudflare-token
+  #   key: token
+```
+
 ### `WeftTunnel`
 
 This CRD is used to represent a tunnel. It is used to control multiple `Deployment`s of `weft tunnel`.  It has the following features:
@@ -56,15 +74,60 @@ This CRD is used to represent a tunnel. It is used to control multiple `Deployme
  - No tokens are stored in the `WeftTunnel` CRD.  Instead, they are fetched from `WeftServer` resources and are directly injected into the tunnel deployments.
 
 The command for the deployment is `weft tunnel --tunnel-name=<tunnel-name> <weft://server-address> <src_url> <dst_url>`.
+
+#### Example
+
+```yaml
+apiVersion: weft.aquaduct.dev/v1alpha1
+kind: WeftTunnel
+metadata:
+  name: example-tunnel
+  namespace: default
+spec:
+  srcURL: "tcp://0.0.0.0:2222"
+  dstURL: "tcp://localhost:22"
+  # Optional: Connect only to specific servers
+  targetServers:
+    - example-weftserver
+```
  
 
 ### `WeftGateway` implementation of `GatewayClass`
 
-The `WeftGateway` CRD is used as a parameter for `GatewayClass`.  The controller manages `Gateway`s of this class by creating `WeftTunnel`s.  It supports features natively supported by `weft tunnel`.
+The `weft` operator implements the Kubernetes Gateway API by managing `Gateway` resources. It does this by leveraging the `WeftGateway` CRD as a parameter for `GatewayClass` to configure Weft-specific settings, such as which `WeftServer`s to use.
+
+#### Example: Gateway API `Gateway` resource
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: example-gateway
+  namespace: default
+spec:
+  gatewayClassName: weft-gateway-class # Assumes 'weft-gateway-class' is defined and uses WeftGateway parametersRef
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80
+    hostname: example.com
+```
 
 ### `AquaductTaaS`
 
 This CRD stores information about the user's online `aquaduct.dev` account.  Specifically, it stores the user's long-lived access token.  Then, by connecting to `api.aquaduct.dev`, it is intended to reconcile the following information into the cluster (not yet implemented):
 
  - Any external (i.e. hosted in the cloud) `WeftServer`s and their tokens
+
+#### Example
+
+```yaml
+apiVersion: weft.aquaduct.dev/v1alpha1
+kind: AquaductTaaS
+metadata:
+  name: example-aquaduct-taas
+  namespace: default
+spec:
+  accessToken: "your-long-lived-access-token"
+```
 
