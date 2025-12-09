@@ -5,6 +5,13 @@ genrule(
     cmd = "cp $< $@",
 )
 
+exports_files([
+    "deployment.yaml",
+    "rolebinding.yaml",
+    "serviceaccount.yaml",
+    "_helpers.tpl",
+])
+
 filegroup(
     name = "templates",
     srcs = glob(["*.yaml"]) + [":copy_role"],

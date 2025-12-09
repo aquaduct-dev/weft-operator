@@ -3,3 +3,5 @@ filegroup(
     srcs = ["gateway-api.yaml"],
     visibility = ["//visibility:public"],
 )
+
+exports_files(["gateway-api.yaml"])

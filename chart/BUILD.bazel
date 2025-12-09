@@ -5,14 +5,21 @@ helm_chart(
     chart = "Chart.yaml",
     crds = [
         "//api/v1alpha1:generated.crds",
-        "//chart/templates/crds:gateway_crds",
+        # "//chart/templates/crds:gateway_crds", # Removed to avoid conflicts if CRDs exist
     ],
     images = ["//cmd:weft_operator_image_push"],
     registry_url = "oci://ghcr.io/aquaduct-dev/charts",
-    templates = ["//chart/templates"],
+    templates = [
+        "//chart/templates:deployment.yaml",
+        "//chart/templates:rolebinding.yaml",
+        "//chart/templates:serviceaccount.yaml",
+        "//chart/templates:_helpers.tpl",
+        # "//chart/templates/crds:gateway-api.yaml", # Removed as it's a CRD, not a deployable template
+    ],
     upgrade_opts = [
         "--namespace=weft-system",
         "--install",
+        "--create-namespace"
     ],
     values = "values.yaml",
     visibility = ["//visibility:public"],
