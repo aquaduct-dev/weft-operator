@@ -186,7 +186,6 @@ func (p *NodeProber) processNode(ctx context.Context, node *corev1.Node) error {
 							Image: "ghcr.io/aquaduct-dev/weft:latest", // TODO: Versioning
 							Args: []string{
 								"probe",
-								"--bind-ip", ip,
 							},
 							ImagePullPolicy: corev1.PullAlways,
 						},
