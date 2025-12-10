@@ -118,7 +118,9 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	// Parse port from ConnectionString
 	port := int32(8080) // Default
-	var connectionSecret, bindIP string
+	var connectionSecret string
+	// Initialize bindIP with a default, in case parsing fails or hostname is empty.
+	bindIP = "0.0.0.0"
 
 	u, err := url.Parse(weftServer.Spec.ConnectionString)
 	if err == nil {
@@ -130,29 +132,39 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 		// The secret is stored as the username in the URL (weft://<secret>@<host>)
 		connectionSecret = u.User.Username()
-		bindIP = u.Hostname()
+		if u.Hostname() != "" {
+			bindIP = u.Hostname()
+		}
 	} else {
-		log.Error(err, "Failed to parse ConnectionString, using default port 8080")
+		log.Error(err, "Failed to parse ConnectionString, using default port 8080 and bindIP 0.0.0.0")
 	}
 
-	// If the server is internal (auto-created), we check if we can bind to the specific IP
-	// The user requested: "read the node to see what address it has in Kubernetes. If the two are the same, --bind-ip should be set to the address. otherwise it should be set to 0.0.0.0"
+	// If the server is internal (auto-created), we determine the correct bind IP
 	if weftServer.Spec.Location == weftv1alpha1.WeftServerLocationInternal {
-		shouldBindZero := true
 		if nodeName, ok := weftServer.Labels["weft.aquaduct.dev/node"]; ok {
 			var node corev1.Node
 			if err := r.Get(ctx, client.ObjectKey{Name: nodeName}, &node); err == nil {
+				externalIP := ""
 				for _, addr := range node.Status.Addresses {
-					if addr.Address == bindIP {
-						shouldBindZero = false
+					if addr.Type == corev1.NodeExternalIP {
+						externalIP = addr.Address
 						break
 					}
 				}
+				if externalIP != "" {
+					bindIP = externalIP
+					log.Info("Using node ExternalIP for bindIP", "node", nodeName, "externalIP", externalIP)
+				} else {
+					// No external IP found, default to 0.0.0.0
+					bindIP = "0.0.0.0"
+					log.Info("No node ExternalIP found, defaulting bindIP to 0.0.0.0", "node", nodeName)
+				}
 			} else {
-				log.Error(err, "Failed to get Node for WeftServer", "node", nodeName)
+				log.Error(err, "Failed to get Node for WeftServer, defaulting bindIP to 0.0.0.0", "node", nodeName)
+				bindIP = "0.0.0.0"
 			}
-		}
-		if shouldBindZero {
+		} else {
+			log.Info("No node label found for WeftServer, defaulting bindIP to 0.0.0.0", "weftServer", weftServer.Name)
 			bindIP = "0.0.0.0"
 		}
 	}
