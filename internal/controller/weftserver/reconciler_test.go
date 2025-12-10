@@ -115,7 +115,7 @@ var _ = Describe("WeftServer Controller", func() {
 			Expect(updatedWs.Status.Tunnels[0].Tx).To(Equal(uint64(100)))
 		})
 
-		It("Should bind to ExternalIP if available", func(ctx context.Context) {
+		It("Should bind to 0.0.0.0 even if ExternalIP is available", func(ctx context.Context) {
 			By("Creating a Node with ExternalIP")
 			node := &corev1.Node{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-node-external"},
@@ -137,7 +137,7 @@ var _ = Describe("WeftServer Controller", func() {
 				},
 				Spec: weftv1alpha1.WeftServerSpec{
 					Location:         weftv1alpha1.WeftServerLocationInternal,
-					ConnectionString: "http://1.2.3.4:8081", // Connection string IP MUST match ExternalIP to bind to it
+					ConnectionString: "http://1.2.3.4:8081",
 				},
 			}
 			Expect(k8sClient.Create(ctx, ws)).To(Succeed())
@@ -151,12 +151,12 @@ var _ = Describe("WeftServer Controller", func() {
 			_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "test-server-node-external", Namespace: "default"}})
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Checking Deployment uses ExternalIP")
+			By("Checking Deployment uses 0.0.0.0")
 			dep := &appsv1.Deployment{}
 			Eventually(func() error {
 				return k8sClient.Get(ctx, types.NamespacedName{Name: "test-server-node-external-server", Namespace: "default"}, dep)
 			}, timeout, interval).Should(Succeed())
-			Expect(dep.Spec.Template.Spec.Containers[0].Args).To(ContainElement("--bind-ip=1.2.3.4"))
+			Expect(dep.Spec.Template.Spec.Containers[0].Args).To(ContainElement("--bind-ip=0.0.0.0"))
 		})
 
 		It("Should bind to 0.0.0.0 if no ExternalIP found", func(ctx context.Context) {

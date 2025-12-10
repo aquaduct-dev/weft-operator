@@ -118,7 +118,9 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	// Parse port from ConnectionString
 	port := int32(8080) // Default
-	var connectionSecret, bindIP string
+	var connectionSecret string
+	// Always bind to 0.0.0.0 to listen on all interfaces
+	bindIP := "0.0.0.0"
 
 	u, err := url.Parse(weftServer.Spec.ConnectionString)
 	if err == nil {
@@ -130,44 +132,8 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 		// The secret is stored as the username in the URL (weft://<secret>@<host>)
 		connectionSecret = u.User.Username()
-		bindIP = u.Hostname()
 	} else {
 		log.Error(err, "Failed to parse ConnectionString, using default port 8080")
-	}
-
-	// If the server is internal (auto-created), we determine the correct bind IP
-	if weftServer.Spec.Location == weftv1alpha1.WeftServerLocationInternal {
-		if nodeName, ok := weftServer.Labels["weft.aquaduct.dev/node"]; ok {
-			var node corev1.Node
-			if err := r.Get(ctx, client.ObjectKey{Name: nodeName}, &node); err == nil {
-				// Check if the bindIP from ConnectionString is actually a public IP on this node
-				isPublicIPOnNode := false
-				for _, addr := range node.Status.Addresses {
-					if addr.Type == corev1.NodeExternalIP && addr.Address == bindIP {
-						isPublicIPOnNode = true
-						break
-					}
-				}
-
-				if isPublicIPOnNode {
-					log.Info("Binding to NodeExternalIP", "node", nodeName, "ip", bindIP)
-					// bindIP stays as is (from ConnectionString)
-				} else {
-					// If bindIP is not a local public IP (could be NAT, or Internal, or missing), bind to 0.0.0.0
-					log.Info("Connection string IP is not a local NodeExternalIP, defaulting bindIP to 0.0.0.0", "node", nodeName, "connectionIP", bindIP)
-					bindIP = "0.0.0.0"
-				}
-			} else {
-				log.Error(err, "Failed to get Node for WeftServer, defaulting bindIP to 0.0.0.0", "node", nodeName)
-				bindIP = "0.0.0.0"
-			}
-		} else {
-			log.Info("No node label found for WeftServer, defaulting bindIP to 0.0.0.0", "weftServer", weftServer.Name)
-			bindIP = "0.0.0.0"
-		}
-	} else if bindIP == "" {
-		// For external servers, if hostname from connection string was empty, default to 0.0.0.0
-		bindIP = "0.0.0.0"
 	}
 
 	// Construct command arguments
