@@ -140,20 +140,22 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		if nodeName, ok := weftServer.Labels["weft.aquaduct.dev/node"]; ok {
 			var node corev1.Node
 			if err := r.Get(ctx, client.ObjectKey{Name: nodeName}, &node); err == nil {
-				externalIP := ""
+				// Check if the bindIP from ConnectionString is actually a public IP on this node
+				isPublicIPOnNode := false
 				for _, addr := range node.Status.Addresses {
-					if addr.Type == corev1.NodeExternalIP {
-						externalIP = addr.Address
+					if addr.Type == corev1.NodeExternalIP && addr.Address == bindIP {
+						isPublicIPOnNode = true
 						break
 					}
 				}
-				if externalIP != "" {
-					bindIP = externalIP
-					log.Info("Using node ExternalIP for bindIP", "node", nodeName, "externalIP", externalIP)
+
+				if isPublicIPOnNode {
+					log.Info("Binding to NodeExternalIP", "node", nodeName, "ip", bindIP)
+					// bindIP stays as is (from ConnectionString)
 				} else {
-					// If no external IP found, always default to 0.0.0.0 for internal WeftServers
+					// If bindIP is not a local public IP (could be NAT, or Internal, or missing), bind to 0.0.0.0
+					log.Info("Connection string IP is not a local NodeExternalIP, defaulting bindIP to 0.0.0.0", "node", nodeName, "connectionIP", bindIP)
 					bindIP = "0.0.0.0"
-					log.Info("No node ExternalIP found, defaulting bindIP to 0.0.0.0", "node", nodeName)
 				}
 			} else {
 				log.Error(err, "Failed to get Node for WeftServer, defaulting bindIP to 0.0.0.0", "node", nodeName)

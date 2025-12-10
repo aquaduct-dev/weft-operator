@@ -137,7 +137,7 @@ var _ = Describe("WeftServer Controller", func() {
 				},
 				Spec: weftv1alpha1.WeftServerSpec{
 					Location:         weftv1alpha1.WeftServerLocationInternal,
-					ConnectionString: "http://10.0.0.1:8081", // Connection string IP shouldn't matter for bind
+					ConnectionString: "http://1.2.3.4:8081", // Connection string IP MUST match ExternalIP to bind to it
 				},
 			}
 			Expect(k8sClient.Create(ctx, ws)).To(Succeed())
