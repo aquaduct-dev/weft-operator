@@ -115,13 +115,14 @@ var _ = Describe("WeftServer Controller", func() {
 			Expect(updatedWs.Status.Tunnels[0].Tx).To(Equal(uint64(100)))
 		})
 
-		It("Should bind to specific IP if it matches Node IP", func(ctx context.Context) {
-			By("Creating a Node")
+		It("Should bind to ExternalIP if available", func(ctx context.Context) {
+			By("Creating a Node with ExternalIP")
 			node := &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-node-1"},
+				ObjectMeta: metav1.ObjectMeta{Name: "test-node-external"},
 				Status: corev1.NodeStatus{
 					Addresses: []corev1.NodeAddress{
 						{Type: corev1.NodeInternalIP, Address: "10.0.0.1"},
+						{Type: corev1.NodeExternalIP, Address: "1.2.3.4"},
 					},
 				},
 			}
@@ -130,13 +131,13 @@ var _ = Describe("WeftServer Controller", func() {
 			By("Creating a WeftServer linked to the Node")
 			ws := &weftv1alpha1.WeftServer{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server-node-match",
+					Name:      "test-server-node-external",
 					Namespace: "default",
-					Labels:    map[string]string{"weft.aquaduct.dev/node": "test-node-1"},
+					Labels:    map[string]string{"weft.aquaduct.dev/node": "test-node-external"},
 				},
 				Spec: weftv1alpha1.WeftServerSpec{
 					Location:         weftv1alpha1.WeftServerLocationInternal,
-					ConnectionString: "http://10.0.0.1:8081",
+					ConnectionString: "http://10.0.0.1:8081", // Connection string IP shouldn't matter for bind
 				},
 			}
 			Expect(k8sClient.Create(ctx, ws)).To(Succeed())
@@ -147,21 +148,21 @@ var _ = Describe("WeftServer Controller", func() {
 				Scheme:        k8sClient.Scheme(),
 				ClientFactory: func(url, tunnelName string) (weftserver.WeftClient, error) { return &mockClient{}, nil },
 			}
-			_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "test-server-node-match", Namespace: "default"}})
+			_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "test-server-node-external", Namespace: "default"}})
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Checking Deployment uses specific IP")
+			By("Checking Deployment uses ExternalIP")
 			dep := &appsv1.Deployment{}
 			Eventually(func() error {
-				return k8sClient.Get(ctx, types.NamespacedName{Name: "test-server-node-match-server", Namespace: "default"}, dep)
+				return k8sClient.Get(ctx, types.NamespacedName{Name: "test-server-node-external-server", Namespace: "default"}, dep)
 			}, timeout, interval).Should(Succeed())
-			Expect(dep.Spec.Template.Spec.Containers[0].Args).To(ContainElement("--bind-ip=10.0.0.1"))
+			Expect(dep.Spec.Template.Spec.Containers[0].Args).To(ContainElement("--bind-ip=1.2.3.4"))
 		})
 
-		It("Should bind to 0.0.0.0 if IP does not match Node IP", func(ctx context.Context) {
-			By("Creating a Node")
+		It("Should bind to 0.0.0.0 if no ExternalIP found", func(ctx context.Context) {
+			By("Creating a Node with only InternalIP")
 			node := &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-node-2"},
+				ObjectMeta: metav1.ObjectMeta{Name: "test-node-internal-only"},
 				Status: corev1.NodeStatus{
 					Addresses: []corev1.NodeAddress{
 						{Type: corev1.NodeInternalIP, Address: "10.0.0.2"},
@@ -170,16 +171,16 @@ var _ = Describe("WeftServer Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, node)).To(Succeed())
 
-			By("Creating a WeftServer linked to the Node with DIFFERENT IP")
+			By("Creating a WeftServer linked to the Node")
 			ws := &weftv1alpha1.WeftServer{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server-node-mismatch",
+					Name:      "test-server-node-internal-only",
 					Namespace: "default",
-					Labels:    map[string]string{"weft.aquaduct.dev/node": "test-node-2"},
+					Labels:    map[string]string{"weft.aquaduct.dev/node": "test-node-internal-only"},
 				},
 				Spec: weftv1alpha1.WeftServerSpec{
 					Location:         weftv1alpha1.WeftServerLocationInternal,
-					ConnectionString: "http://1.2.3.4:8081", // Public IP differing from Node IP
+					ConnectionString: "http://10.0.0.2:8081",
 				},
 			}
 			Expect(k8sClient.Create(ctx, ws)).To(Succeed())
@@ -190,13 +191,13 @@ var _ = Describe("WeftServer Controller", func() {
 				Scheme:        k8sClient.Scheme(),
 				ClientFactory: func(url, tunnelName string) (weftserver.WeftClient, error) { return &mockClient{}, nil },
 			}
-			_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "test-server-node-mismatch", Namespace: "default"}})
+			_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "test-server-node-internal-only", Namespace: "default"}})
 			Expect(err).NotTo(HaveOccurred())
 
 			By("Checking Deployment uses 0.0.0.0")
 			dep := &appsv1.Deployment{}
 			Eventually(func() error {
-				return k8sClient.Get(ctx, types.NamespacedName{Name: "test-server-node-mismatch-server", Namespace: "default"}, dep)
+				return k8sClient.Get(ctx, types.NamespacedName{Name: "test-server-node-internal-only-server", Namespace: "default"}, dep)
 			}, timeout, interval).Should(Succeed())
 			Expect(dep.Spec.Template.Spec.Containers[0].Args).To(ContainElement("--bind-ip=0.0.0.0"))
 		})
