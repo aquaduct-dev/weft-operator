@@ -153,11 +153,25 @@ func (p *NodeProber) processNode(ctx context.Context, node *corev1.Node) error {
 		return err
 	}
 
-	// Determine IP
-	ip := getNodeIP(node)
-	if ip == "" {
+	// Determine IP from Node Status
+	var internalIP, externalIP string
+	for _, addr := range node.Status.Addresses {
+		if addr.Type == corev1.NodeInternalIP {
+			internalIP = addr.Address
+		} else if addr.Type == corev1.NodeExternalIP {
+			externalIP = addr.Address
+		}
+	}
+
+	if internalIP == "" && externalIP == "" {
 		log.Info("Skipping node with no valid IP")
 		return nil
+	}
+	
+	// Use InternalIP for logging/probing if available, else External
+	probeIP := internalIP
+	if probeIP == "" {
+		probeIP = externalIP
 	}
 
 	// Create Probe Job
@@ -195,7 +209,7 @@ func (p *NodeProber) processNode(ctx context.Context, node *corev1.Node) error {
 		},
 	}
 
-	log.Info("Creating probe job", "job", jobName, "ip", ip)
+	log.Info("Creating probe job", "job", jobName, "ip", probeIP)
 	if err := p.Client.Create(ctx, job); err != nil {
 		return fmt.Errorf("failed to create probe job: %w", err)
 	}
@@ -224,6 +238,7 @@ func (p *NodeProber) processNode(ctx context.Context, node *corev1.Node) error {
 	if success {
 		log.Info("Probe succeeded, creating WeftServer")
 
+		discoveredIP := ""
 		// Read logs to discover public IP
 		// Find Pod for Job
 		var podList corev1.PodList
@@ -243,30 +258,35 @@ func (p *NodeProber) processNode(ctx context.Context, node *corev1.Node) error {
 					_, err := io.Copy(buf, podLogs)
 					if err == nil {
 						logs := buf.String()
-						// Parse IP from logs. Assuming format "Public IP: <ip>" or similar?
-						// User said "read the logs from the job to discover the node's public IP address".
-						// I need to know the log format.
-						// Assuming `weft probe` outputs the IP as the last line or something.
-						// Or I can assume it just prints the IP.
-						// Let's assume the log contains the IP.
-						// For now, let's try to find an IP address in the logs.
-						// Or maybe `weft probe` outputs JSON?
-						// Without `weft probe` source, I'll guess.
-						// Assuming `weft probe` prints the IP to stdout.
 						trimmed := strings.TrimSpace(logs)
 						if trimmed != "" {
 							// Basic validation?
-							ip = trimmed
-							log.Info("Discovered public IP from logs", "ip", ip)
+							discoveredIP = trimmed
+							log.Info("Discovered public IP from logs", "ip", discoveredIP)
 						}
 					}
 				}
 			}
 		}
 
+		// Determine IP to use in ConnectionString
+		// Priority: Discovered IP > External IP > Internal IP
+		connectionIP := internalIP
+		if discoveredIP != "" {
+			connectionIP = discoveredIP
+		} else if externalIP != "" {
+			connectionIP = externalIP
+		}
+
+		if connectionIP == "" {
+			// Should not happen given earlier checks, but just in case
+			log.Error(nil, "No valid IP found for connection string", "node", node.Name)
+			return nil
+		}
+
 		// Create WeftServer
 		secret := randString(10)
-		connStr := fmt.Sprintf("weft://%s@%s:9092", secret, ip)
+		connStr := fmt.Sprintf("weft://%s@%s:9092", secret, connectionIP)
 
 		newWS := &weftv1alpha1.WeftServer{
 			ObjectMeta: metav1.ObjectMeta{
@@ -289,20 +309,6 @@ func (p *NodeProber) processNode(ctx context.Context, node *corev1.Node) error {
 	}
 
 	return nil
-}
-
-func getNodeIP(node *corev1.Node) string {
-	for _, addr := range node.Status.Addresses {
-		if addr.Type == corev1.NodeInternalIP {
-			return addr.Address
-		}
-	}
-	for _, addr := range node.Status.Addresses {
-		if addr.Type == corev1.NodeExternalIP {
-			return addr.Address
-		}
-	}
-	return ""
 }
 
 func randString(n int) string {
