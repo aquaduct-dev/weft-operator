@@ -118,9 +118,7 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	// Parse port from ConnectionString
 	port := int32(8080) // Default
-	var connectionSecret string
-	// Initialize bindIP with a default, in case parsing fails or hostname is empty.
-	bindIP = "0.0.0.0"
+	var connectionSecret, bindIP string
 
 	u, err := url.Parse(weftServer.Spec.ConnectionString)
 	if err == nil {
@@ -132,11 +130,9 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 		// The secret is stored as the username in the URL (weft://<secret>@<host>)
 		connectionSecret = u.User.Username()
-		if u.Hostname() != "" {
-			bindIP = u.Hostname()
-		}
+		bindIP = u.Hostname()
 	} else {
-		log.Error(err, "Failed to parse ConnectionString, using default port 8080 and bindIP 0.0.0.0")
+		log.Error(err, "Failed to parse ConnectionString, using default port 8080")
 	}
 
 	// If the server is internal (auto-created), we determine the correct bind IP
@@ -155,7 +151,7 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 					bindIP = externalIP
 					log.Info("Using node ExternalIP for bindIP", "node", nodeName, "externalIP", externalIP)
 				} else {
-					// No external IP found, default to 0.0.0.0
+					// If no external IP found, always default to 0.0.0.0 for internal WeftServers
 					bindIP = "0.0.0.0"
 					log.Info("No node ExternalIP found, defaulting bindIP to 0.0.0.0", "node", nodeName)
 				}
@@ -167,6 +163,9 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			log.Info("No node label found for WeftServer, defaulting bindIP to 0.0.0.0", "weftServer", weftServer.Name)
 			bindIP = "0.0.0.0"
 		}
+	} else if bindIP == "" {
+		// For external servers, if hostname from connection string was empty, default to 0.0.0.0
+		bindIP = "0.0.0.0"
 	}
 
 	// Construct command arguments
