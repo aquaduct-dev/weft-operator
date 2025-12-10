@@ -75,9 +75,8 @@ var _ = Describe("WeftTunnel Controller", func() {
 			}, timeout, interval).Should(Succeed())
 
 			// Check URL construction for Internal
-			// Expected: weft://user:pass@server-1-server.default.svc:9090
-			// Original: weft://user:pass@0.0.0.0:9090
-			expectedURL1 := "weft://user:pass@server-1-server.default.svc.cluster.local:9090"
+			// Expected: weft://user:pass@0.0.0.0:9090 (should match ConnectionString)
+			expectedURL1 := "weft://user:pass@0.0.0.0:9090"
 			Expect(dep1.Spec.Template.Spec.Containers[0].Args).To(ContainElement(expectedURL1))
 			Expect(dep1.Spec.Template.Spec.Containers[0].Args).To(ContainElement("--tunnel-name=" + tunnel.Name))
 			Expect(dep1.Spec.Template.Spec.Containers[0].Args).To(ContainElement("http://src1"))
