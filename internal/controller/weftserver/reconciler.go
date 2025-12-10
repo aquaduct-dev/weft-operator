@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"k8s.io/client-go/kubernetes"
 
@@ -222,7 +223,7 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	})
 	if err != nil {
 		log.Error(err, "Failed to reconcile PVC")
-		return ctrl.Result{}, r.updateWeftServerStatus(ctx, &weftServer, err)
+		return r.updateWeftServerStatus(ctx, &weftServer, err)
 	}
 
 	// Reconcile Deployment
@@ -319,7 +320,7 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	})
 	if err != nil {
 		log.Error(err, "Failed to reconcile Deployment")
-		return ctrl.Result{}, r.updateWeftServerStatus(ctx, &weftServer, err)
+		return r.updateWeftServerStatus(ctx, &weftServer, err)
 	}
 
 	// Reconcile Service
@@ -373,7 +374,7 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	})
 	if err != nil {
 		log.Error(err, "Failed to reconcile Service")
-		return ctrl.Result{}, r.updateWeftServerStatus(ctx, &weftServer, err)
+		return r.updateWeftServerStatus(ctx, &weftServer, err)
 	}
 
 	// If external, we returned early in the old code, but here we might continue to updateStatus.
@@ -381,7 +382,7 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// We should still update status.
 
 	if weftServer.Spec.Location == weftv1alpha1.WeftServerLocationExternal {
-		return ctrl.Result{}, r.updateWeftServerStatus(ctx, &weftServer, nil)
+		return r.updateWeftServerStatus(ctx, &weftServer, nil)
 	}
 
 	// Get deployment status and update WeftServer status
@@ -393,13 +394,13 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	if err := r.Get(ctx, client.ObjectKeyFromObject(dep), dep); err != nil {
 		log.Error(err, "Failed to get deployment after creation/update")
-		return ctrl.Result{}, r.updateWeftServerStatus(ctx, &weftServer, err)
+		return r.updateWeftServerStatus(ctx, &weftServer, err)
 	}
 
-	return ctrl.Result{}, r.updateWeftServerStatus(ctx, &weftServer, nil)
+	return r.updateWeftServerStatus(ctx, &weftServer, nil)
 }
 
-func (r *WeftServerReconciler) updateWeftServerStatus(ctx context.Context, weftServer *weftv1alpha1.WeftServer, reconcileErr error) error {
+func (r *WeftServerReconciler) updateWeftServerStatus(ctx context.Context, weftServer *weftv1alpha1.WeftServer, reconcileErr error) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
 
 	// Set initial status conditions
@@ -443,7 +444,10 @@ func (r *WeftServerReconciler) updateWeftServerStatus(ctx context.Context, weftS
 				Reason:  "ClientError",
 				Message: fmt.Sprintf("Failed to create weft client: %s", err.Error()),
 			})
-			return r.Status().Update(ctx, weftServer)
+			if err := r.Status().Update(ctx, weftServer); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
 
 		tunnels, err := weftClient.ListTunnels()
@@ -466,7 +470,10 @@ func (r *WeftServerReconciler) updateWeftServerStatus(ctx context.Context, weftS
 					Message: fmt.Sprintf("Failed to list tunnels: %s", err.Error()),
 				})
 			}
-			return r.Status().Update(ctx, weftServer)
+			if err := r.Status().Update(ctx, weftServer); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
 
 		// Convert weftclient.TunnelInfo to weftv1alpha1.TunnelStatus
@@ -488,7 +495,7 @@ func (r *WeftServerReconciler) updateWeftServerStatus(ctx context.Context, weftS
 		})
 	}
 
-	return r.Status().Update(ctx, weftServer)
+	return ctrl.Result{}, r.Status().Update(ctx, weftServer)
 }
 
 func int32Ptr(i int32) *int32 {
