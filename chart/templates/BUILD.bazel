@@ -2,8 +2,8 @@ genrule(
     name = "copy_role",
     srcs = ["//api/v1alpha1:generated.rbac"],
     outs = ["role.yaml"],
-    visibility = ["//visibility:public"],
     cmd = "cp $< $@",
+    visibility = ["//visibility:public"],
 )
 
 exports_files([

@@ -20,7 +20,7 @@ helm_chart(
     upgrade_opts = [
         "--namespace=weft-system",
         "--install",
-        "--create-namespace"
+        "--create-namespace",
     ],
     values = "values.yaml",
     visibility = ["//visibility:public"],
