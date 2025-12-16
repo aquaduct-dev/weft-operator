@@ -42,6 +42,9 @@ def _controller_gen_impl(ctx):
             
             export PATH=$PWD/{go_bin_dir}:$PATH
             
+            # Clean potential temp dir for CRDs
+            rm -rf crds_tmp
+            
             # Run controller-gen
             {tool} "$@"
             RESULT=$?
@@ -49,6 +52,19 @@ def _controller_gen_impl(ctx):
             if [ $RESULT -ne 0 ]; then
                 echo "controller-gen failed with exit code $RESULT"
                 exit $RESULT
+            fi
+
+            # Handle CRD concatenation if requested
+            if [ "{concat_crds}" = "True" ]; then
+                if [ -d "crds_tmp" ]; then
+                     rm -f crd.yaml
+                     touch crd.yaml
+                     # Sort to ensure deterministic order
+                     for f in $(find crds_tmp -name "*.yaml" | sort); do
+                        echo "---" >> crd.yaml
+                        cat "$f" >> crd.yaml
+                     done
+                fi
             fi
             
             # Move generated files to declared outputs
@@ -78,6 +94,7 @@ def _controller_gen_impl(ctx):
             tool = tool.path,
             output_paths = output_paths,
             go_bin_dir = go.go.dirname,
+            concat_crds = str(ctx.attr.concat_crds),
         ),
         arguments = [args],
         mnemonic = "ControllerGen",
@@ -94,6 +111,7 @@ controller_gen_rule = rule(
         "outs": attr.output_list(mandatory = True),
         "dirs": attr.string_list(),
         "args": attr.string_list(),
+        "concat_crds": attr.bool(default = False),
         "_tool": attr.label(
             default = Label("//tools/controller-gen:controller-gen"),
             executable = True,
@@ -129,14 +147,14 @@ def controller_gen(
     paths_arg = ["paths={" + ",".join(paths) + "}"]
 
     # Helper to create rule
-    def create_rule(suffix,  specific_args,outs=[], dirs=[]):
+    def create_rule(suffix,  specific_args,outs=[], dirs=[], concat_crds=False):
         # Output dir args
         # We add output configuration to ensure generated files are found easily in the root of execution
         extra_args = []
         if suffix == "rbac":
             extra_args.append("output:rbac:artifacts:config=.")
         elif suffix == "crds":
-            extra_args.append("output:crd:dir=./crds")
+            extra_args.append("output:crd:dir=./crds_tmp")
         elif suffix == "webhook":
             extra_args.append("output:webhook:dir=.")
 
@@ -146,12 +164,13 @@ def controller_gen(
             outs = outs,
             dirs = dirs,
             args = specific_args + paths_arg + extra_args,
+            concat_crds = concat_crds,
             **kwargs
         )
 
     create_rule("deepcopy", deepcopy_args, outs=["zz_generated.deepcopy.go"])
     create_rule("rbac", rbac_args, outs=["role.yaml"])
-    create_rule("crds", crd_args, dirs=["crds"])
+    create_rule("crds", crd_args, outs=["crd.yaml"], concat_crds=True)
 
     if webhook_outs:
         create_rule("webhook", webhook_outs, webhook_args)

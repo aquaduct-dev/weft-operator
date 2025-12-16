@@ -140,6 +140,11 @@ func (p *NodeProber) probeNodes(ctx context.Context) error {
 func (p *NodeProber) processNode(ctx context.Context, node *corev1.Node) error {
 	log := log.FromContext(ctx).WithName("node-prober").WithValues("node", node.Name)
 
+	if role, ok := node.Labels["node.kubernetes.io/role"]; ok && role == "autoscaler-node" {
+		log.Info("Skipping WeftServer creation for node with role 'autoscaler-node'")
+		return nil
+	}
+
 	// Check if WeftServer already exists for this node
 	// Naming convention: node-<node-name>
 	// We also check if we created it
