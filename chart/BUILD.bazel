@@ -4,6 +4,7 @@ helm_chart(
     name = "weft_operator",
     chart = "Chart.yaml",
     crds = [
+        "//chart/templates/crds:copy_crds",
         # "//chart/templates/crds:gateway_crds", # Removed to avoid conflicts if CRDs exist
     ],
     images = ["//cmd:weft_operator_image_push"],
@@ -12,7 +13,6 @@ helm_chart(
         "//chart/templates:deployment.yaml",
         "//chart/templates:rolebinding.yaml",
         "//chart/templates:role.yaml",
-        "//chart/templates:crd.yaml",
         "//chart/templates:serviceaccount.yaml",
         "//chart/templates:_helpers.tpl",
         # "//chart/templates/crds:gateway-api.yaml", # Removed as it's a CRD, not a deployable template

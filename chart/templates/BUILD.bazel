@@ -6,13 +6,6 @@ genrule(
     visibility = ["//visibility:public"],
 )
 
-genrule(
-    name = "copy_crds",
-    srcs = ["//api/v1alpha1:generated.crds"],
-    outs = ["crd.yaml"],
-    cmd = "cp $< $@",
-    visibility = ["//visibility:public"],
-)
 
 exports_files([
     "deployment.yaml",
