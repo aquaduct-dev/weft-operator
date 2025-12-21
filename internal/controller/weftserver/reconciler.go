@@ -278,6 +278,24 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 						Args:            cmdArgs,
 						Env:             envVars,
 						ImagePullPolicy: corev1.PullAlways,
+						LivenessProbe: &corev1.Probe{
+							ProbeHandler: corev1.ProbeHandler{
+								TCPSocket: &corev1.TCPSocketAction{
+									Port: intstr.FromInt(int(port)),
+								},
+							},
+							InitialDelaySeconds: 10,
+							PeriodSeconds:       10,
+						},
+						ReadinessProbe: &corev1.Probe{
+							ProbeHandler: corev1.ProbeHandler{
+								TCPSocket: &corev1.TCPSocketAction{
+									Port: intstr.FromInt(int(port)),
+								},
+							},
+							InitialDelaySeconds: 5,
+							PeriodSeconds:       10,
+						},
 						VolumeMounts: []corev1.VolumeMount{
 							{
 								Name:      "certs",
@@ -315,6 +333,24 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 						Args:            cmdArgs,
 						Env:             envVars,
 						ImagePullPolicy: corev1.PullAlways,
+						LivenessProbe: &corev1.Probe{
+							ProbeHandler: corev1.ProbeHandler{
+								TCPSocket: &corev1.TCPSocketAction{
+									Port: intstr.FromInt(int(port)),
+								},
+							},
+							InitialDelaySeconds: 10,
+							PeriodSeconds:       10,
+						},
+						ReadinessProbe: &corev1.Probe{
+							ProbeHandler: corev1.ProbeHandler{
+								TCPSocket: &corev1.TCPSocketAction{
+									Port: intstr.FromInt(int(port)),
+								},
+							},
+							InitialDelaySeconds: 5,
+							PeriodSeconds:       10,
+						},
 						VolumeMounts: []corev1.VolumeMount{
 							{
 								MountPath: certsPath,
@@ -508,7 +544,7 @@ func (r *WeftServerReconciler) updateWeftServerStatus(ctx context.Context, weftS
 		})
 	}
 
-	return ctrl.Result{}, r.Status().Update(ctx, weftServer)
+	return ctrl.Result{RequeueAfter: 1 * time.Minute}, r.Status().Update(ctx, weftServer)
 }
 
 func int32Ptr(i int32) *int32 {
