@@ -1,0 +1,225 @@
+{{- if .Values.serviceAccount.create -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+  labels:
+    {{- include "weft-operator.labels" . | nindent 4 }}
+rules:
+# WeftServer resources
+- apiGroups:
+  - weft.aquaduct.dev
+  resources:
+  - weftservers
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - weft.aquaduct.dev
+  resources:
+  - weftservers/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - weft.aquaduct.dev
+  resources:
+  - weftservers/status
+  verbs:
+  - get
+  - patch
+  - update
+
+# WeftTunnel resources
+- apiGroups:
+  - weft.aquaduct.dev
+  resources:
+  - wefttunnels
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - weft.aquaduct.dev
+  resources:
+  - wefttunnels/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - weft.aquaduct.dev
+  resources:
+  - wefttunnels/status
+  verbs:
+  - get
+  - patch
+  - update
+
+# WeftGateway resources
+- apiGroups:
+  - weft.aquaduct.dev
+  resources:
+  - weftgateways
+  verbs:
+  - get
+  - list
+  - watch
+
+# AquaductTaaS resources
+- apiGroups:
+  - weft.aquaduct.dev
+  resources:
+  - aquaducttaases
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - weft.aquaduct.dev
+  resources:
+  - aquaducttaases/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - weft.aquaduct.dev
+  resources:
+  - aquaducttaases/status
+  verbs:
+  - get
+  - patch
+  - update
+
+# Gateway API resources
+- apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - gatewayclasses
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - gateways
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - gateways/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - httproutes
+  verbs:
+  - get
+  - list
+  - watch
+
+# Core Kubernetes resources
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - persistentvolumeclaims
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - services
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+
+# Leader election
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+{{- end }}
