@@ -79,6 +79,7 @@ type WeftServerReconciler struct {
 // move the current state of the cluster closer to the desired state.
 func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
+	log.Info("DEBUG: Starting Reconcile", "req", req)
 
 	// Initialize ClientFactory if not set
 	if r.ClientFactory == nil {
