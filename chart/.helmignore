@@ -1,0 +1,22 @@
+# Helm ignore file
+# Patterns to ignore when building Helm packages
+
+# Bazel files
+*.bazel
+BUILD
+BUILD.bazel
+WORKSPACE
+WORKSPACE.bazel
+
+# Common VCS dirs
+.git/
+.gitignore
+
+# IDE files
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
