@@ -278,7 +278,7 @@ EOF
             return 1
         fi
         sleep 1
-        ((count++))
+        count=$((count + 1))
     done
     log_info "  ✓ Deployment $dep_name created"
     
@@ -404,7 +404,7 @@ EOF
             return 1
         fi
         sleep 1
-        ((count++))
+        count=$((count + 1))
     done
     log_info "  ✓ Tunnel Deployment $expected_dep created"
     
@@ -503,7 +503,7 @@ EOF
             return 1
         fi
         sleep 1
-        ((count++))
+        count=$((count + 1))
     done
     
     log_info "  ✓ Deployment deleted via owner reference"
