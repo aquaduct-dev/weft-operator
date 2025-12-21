@@ -464,6 +464,13 @@ func (r *WeftServerReconciler) updateWeftServerStatus(ctx context.Context, weftS
 	} else {
 		// Create weftclient and list tunnels
 		connStr := weftServer.Spec.ConnectionString
+		if connStr == "" {
+			// If connection string is empty, we cannot list tunnels.
+			// This happens for External servers that haven't been configured yet (e.g. by AquaductTaaS)
+			log.Info("ConnectionString is empty, skipping status update")
+			return ctrl.Result{}, nil
+		}
+
 		if weftServer.Spec.Location == weftv1alpha1.WeftServerLocationInternal {
 			u, err := url.Parse(connStr)
 			if err == nil {
