@@ -164,6 +164,10 @@ install_chart() {
         kubectl wait --for=condition=established crd/"$crd" --timeout=30s || true
     done
     
+    # Create weft-system namespace (hardcoded requirement for node prober and some lookups)
+    log_info "Creating weft-system namespace..."
+    kubectl create namespace weft-system --dry-run=client -o yaml | kubectl apply -f -
+    
     # Note: Gateway API CRDs are installed by the chart from templates/crds/gateway-api.yaml
     
     # Install chart with test image tag
@@ -265,10 +269,6 @@ EOF
     local dep_name="${server_name}-server"
     local pvc_name="${server_name}-certs"
     
-    # Create weft-system namespace (hardcoded requirement for node prober and some lookups)
-    log_info "Creating weft-system namespace..."
-    kubectl create namespace weft-system --dry-run=client -o yaml | kubectl apply -f -
-    
     # Wait for Deployment to be created (with retry)
     log_info "  Waiting for Deployment to be created..."
     local max_wait=30
@@ -276,8 +276,22 @@ EOF
     while ! kubectl get deployment "$dep_name" -n "$NAMESPACE" >/dev/null 2>&1; do
         if [ $count -ge $max_wait ]; then
             log_error "  ✗ Deployment not created within ${max_wait}s"
-            log_error "  Operator logs:"
-            kubectl logs -l app.kubernetes.io/name=weft-operator -n "$NAMESPACE" --tail=200 || true
+            
+            # Debug: Check for pod restarts
+            log_error "  Pod Status:"
+            kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/name=weft-operator
+            
+            local restarts
+            restarts=$(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/name=weft-operator -o jsonpath='{.items[0].status.containerStatuses[0].restartCount}')
+            
+            if [ "$restarts" -gt 0 ]; then
+                log_error "  ⚠️ Operator pod has restarted $restarts times! Fetching previous logs:"
+                kubectl logs -l app.kubernetes.io/name=weft-operator -n "$NAMESPACE" --previous --tail=200 || true
+            else
+                log_error "  Operator logs (current):"
+                kubectl logs -l app.kubernetes.io/name=weft-operator -n "$NAMESPACE" --tail=200 || true
+            fi
+            
             kubectl delete weftserver "$server_name" -n "$NAMESPACE" --wait=false 2>/dev/null || true
             return 1
         fi
