@@ -1,0 +1,13 @@
+# Kind cluster configuration for weft-operator integration tests.
+# This creates a minimal single-node cluster suitable for CI/CD environments.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    # Pre-load images locally to speed up tests
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"

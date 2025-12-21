@@ -1,0 +1,37 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+# E2E integration tests for the weft-operator Helm chart.
+# These tests verify comprehensive operator functionality in a real Kubernetes cluster.
+#
+# Test coverage includes:
+# - CRD availability (WeftServer, WeftTunnel, WeftGateway, Gateway API CRDs)
+# - WeftServer reconciliation (Internal creates Deployment/Service/PVC, External does not)
+# - WeftTunnel reconciliation (creates Deployments per target server)
+# - Status condition updates
+# - Cleanup via owner references
+# - Gateway API integration
+# - Multi-server tunnel targeting
+# - Deployment CLI argument verification
+#
+# Use scripts/run-e2e.sh for full cluster lifecycle management.
+go_test(
+    name = "e2e_test",
+    srcs = ["e2e_test.go"],
+    tags = [
+        "e2e",
+        "integration",
+        "manual",  # Don't run with //... by default
+    ],
+    deps = [
+        "@com_github_onsi_ginkgo_v2//:ginkgo",
+        "@com_github_onsi_gomega//:gomega",
+        "@io_k8s_api//apps/v1:apps",
+        "@io_k8s_api//core/v1:core",
+        "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
+        "@io_k8s_apimachinery//pkg/apis/meta/v1/unstructured",
+        "@io_k8s_apimachinery//pkg/runtime/schema",
+        "@io_k8s_client_go//dynamic",
+        "@io_k8s_client_go//kubernetes",
+        "@io_k8s_client_go//tools/clientcmd",
+    ],
+)

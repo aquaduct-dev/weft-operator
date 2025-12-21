@@ -1,0 +1,75 @@
+# GitHub Actions workflow for weft-operator integration tests.
+# Runs integration tests that install the Helm chart in a Kind cluster
+# and verify end-to-end functionality.
+name: Integration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Calculate previous run number
+        id: calc_prev_run
+        run: echo "number=$((${{ github.run_number }} - 1))" >> $GITHUB_OUTPUT
+
+      - name: Restore Bazel cache
+        uses: actions/cache/restore@v4
+        with:
+          path: "/home/runner/.cache/bazel"
+          key: bazel-integration-${{ steps.calc_prev_run.outputs.number }}
+          restore-keys: |
+            bazel-integration-
+            bazel-test-
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      - name: Set up Java (required by Bazel)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Bazelisk
+        run: |
+          sudo curl -L -o /usr/local/bin/bazelisk https://github.com/bazelbuild/bazelisk/releases/download/v1.13.0/bazelisk-linux-amd64
+          sudo chmod +x /usr/local/bin/bazelisk
+          bazelisk --version
+
+      - name: Install Kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+          kind --version
+
+      - name: Install Helm
+        run: |
+          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          helm version
+
+      - name: Run Integration Tests
+        run: |
+          ./scripts/run-e2e.sh
+
+      - name: Save Bazel cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: "/home/runner/.cache/bazel"
+          key: bazel-integration-${{ github.run_number }}
+
+      - name: Cleanup Kind cluster on failure
+        if: failure()
+        run: |
+          kind delete cluster --name weft-operator-e2e || true
