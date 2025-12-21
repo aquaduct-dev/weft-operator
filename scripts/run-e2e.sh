@@ -265,6 +265,10 @@ EOF
     local dep_name="${server_name}-server"
     local pvc_name="${server_name}-certs"
     
+    # Create weft-system namespace (hardcoded requirement for node prober and some lookups)
+    log_info "Creating weft-system namespace..."
+    kubectl create namespace weft-system --dry-run=client -o yaml | kubectl apply -f -
+    
     # Wait for Deployment to be created (with retry)
     log_info "  Waiting for Deployment to be created..."
     local max_wait=30
@@ -273,7 +277,7 @@ EOF
         if [ $count -ge $max_wait ]; then
             log_error "  ✗ Deployment not created within ${max_wait}s"
             log_error "  Operator logs:"
-            kubectl logs -l app.kubernetes.io/name=weft-operator -n "$NAMESPACE" --tail=50 || true
+            kubectl logs -l app.kubernetes.io/name=weft-operator -n "$NAMESPACE" --tail=200 || true
             kubectl delete weftserver "$server_name" -n "$NAMESPACE" --wait=false 2>/dev/null || true
             return 1
         fi
@@ -398,7 +402,7 @@ EOF
         if [ $count -ge $max_wait ]; then
             log_error "  ✗ Tunnel Deployment not created within ${max_wait}s"
             log_error "  Operator logs:"
-            kubectl logs -l app.kubernetes.io/name=weft-operator -n "$NAMESPACE" --tail=50 || true
+            kubectl logs -l app.kubernetes.io/name=weft-operator -n "$NAMESPACE" --tail=200 || true
             kubectl delete wefttunnel "$tunnel_name" -n "$NAMESPACE" --wait=false 2>/dev/null || true
             kubectl delete weftserver "$server_name" -n "$NAMESPACE" --wait=false 2>/dev/null || true
             return 1
