@@ -262,28 +262,34 @@ EOF
     
     log_info "  Created Internal WeftServer"
     
-    # Wait for resources to be created
-    sleep 5
-    
     local dep_name="${server_name}-server"
     local pvc_name="${server_name}-certs"
     
-    # Verify Deployment
-    if kubectl get deployment "$dep_name" -n "$NAMESPACE" >/dev/null 2>&1; then
-        log_info "  ✓ Deployment $dep_name created"
-        
-        # Check host network
-        local host_network
-        host_network=$(kubectl get deployment "$dep_name" -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.hostNetwork}')
-        if [ "$host_network" = "true" ]; then
-            log_info "  ✓ Deployment uses host network"
-        else
-            log_warn "  ! Deployment does not use host network"
+    # Wait for Deployment to be created (with retry)
+    log_info "  Waiting for Deployment to be created..."
+    local max_wait=30
+    local count=0
+    while ! kubectl get deployment "$dep_name" -n "$NAMESPACE" >/dev/null 2>&1; do
+        if [ $count -ge $max_wait ]; then
+            log_error "  ✗ Deployment not created within ${max_wait}s"
+            log_error "  Operator logs:"
+            kubectl logs -l app.kubernetes.io/name=weft-operator -n "$NAMESPACE" --tail=50 || true
+            kubectl delete weftserver "$server_name" -n "$NAMESPACE" --wait=false 2>/dev/null || true
+            return 1
         fi
+        sleep 1
+        ((count++))
+    done
+    log_info "  ✓ Deployment $dep_name created"
+    
+    # Verify Deployment config
+    # Check host network
+    local host_network
+    host_network=$(kubectl get deployment "$dep_name" -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.hostNetwork}')
+    if [ "$host_network" = "true" ]; then
+        log_info "  ✓ Deployment uses host network"
     else
-        log_error "  ✗ Deployment not created"
-        kubectl delete weftserver "$server_name" -n "$NAMESPACE" --wait=false 2>/dev/null || true
-        return 1
+        log_warn "  ! Deployment does not use host network"
     fi
     
     # Verify Service
@@ -382,36 +388,42 @@ EOF
     
     log_info "  Created WeftTunnel"
     
-    sleep 5
-    
     local expected_dep="tunnel-${tunnel_name}-to-${server_name}"
     
-    # Verify tunnel Deployment is created
-    if kubectl get deployment "$expected_dep" -n "$NAMESPACE" >/dev/null 2>&1; then
-        log_info "  ✓ Tunnel Deployment $expected_dep created"
-        
-        # Verify labels
-        local app_label
-        app_label=$(kubectl get deployment "$expected_dep" -n "$NAMESPACE" -o jsonpath='{.metadata.labels.app}')
-        if [ "$app_label" = "weft-tunnel" ]; then
-            log_info "  ✓ Deployment has correct app label"
-        else
-            log_warn "  ! Unexpected app label: $app_label"
+    # Wait for tunnel Deployment to be created (with retry)
+    log_info "  Waiting for Tunnel Deployment to be created..."
+    local max_wait=30
+    local count=0
+    while ! kubectl get deployment "$expected_dep" -n "$NAMESPACE" >/dev/null 2>&1; do
+        if [ $count -ge $max_wait ]; then
+            log_error "  ✗ Tunnel Deployment not created within ${max_wait}s"
+            log_error "  Operator logs:"
+            kubectl logs -l app.kubernetes.io/name=weft-operator -n "$NAMESPACE" --tail=50 || true
+            kubectl delete wefttunnel "$tunnel_name" -n "$NAMESPACE" --wait=false 2>/dev/null || true
+            kubectl delete weftserver "$server_name" -n "$NAMESPACE" --wait=false 2>/dev/null || true
+            return 1
         fi
-        
-        # Verify container args
-        local args
-        args=$(kubectl get deployment "$expected_dep" -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.containers[0].args[0]}')
-        if [ "$args" = "tunnel" ]; then
-            log_info "  ✓ Container command is 'tunnel'"
-        else
-            log_warn "  ! Unexpected first arg: $args"
-        fi
+        sleep 1
+        ((count++))
+    done
+    log_info "  ✓ Tunnel Deployment $expected_dep created"
+    
+    # Verify labels
+    local app_label
+    app_label=$(kubectl get deployment "$expected_dep" -n "$NAMESPACE" -o jsonpath='{.metadata.labels.app}')
+    if [ "$app_label" = "weft-tunnel" ]; then
+        log_info "  ✓ Deployment has correct app label"
     else
-        log_error "  ✗ Tunnel Deployment not created"
-        kubectl delete wefttunnel "$tunnel_name" -n "$NAMESPACE" --wait=false 2>/dev/null || true
-        kubectl delete weftserver "$server_name" -n "$NAMESPACE" --wait=false 2>/dev/null || true
-        return 1
+        log_warn "  ! Unexpected app label: $app_label"
+    fi
+    
+    # Verify container args
+    local args
+    args=$(kubectl get deployment "$expected_dep" -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.containers[0].args[0]}')
+    if [ "$args" = "tunnel" ]; then
+        log_info "  ✓ Container command is 'tunnel'"
+    else
+        log_warn "  ! Unexpected first arg: $args"
     fi
     
     # Verify status conditions
