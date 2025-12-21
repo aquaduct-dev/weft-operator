@@ -464,6 +464,9 @@ func (r *WeftServerReconciler) updateWeftServerStatus(ctx context.Context, weftS
 	} else {
 		// Create weftclient and list tunnels
 		connStr := weftServer.Spec.ConnectionString
+
+		log.Info("Checking connection string", "connStr", connStr)
+
 		if connStr == "" {
 			// If connection string is empty, we cannot list tunnels.
 			// This happens for External servers that haven't been configured yet (e.g. by AquaductTaaS)
@@ -507,10 +510,30 @@ func (r *WeftServerReconciler) updateWeftServerStatus(ctx context.Context, weftS
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
 
-		tunnels, err := weftClient.ListTunnels()
+		// Use a channel to implement timeout for ListTunnels
+		type tunnelResult struct {
+			tunnels map[string]weftclient.TunnelInfo
+			err     error
+		}
+		resultCh := make(chan tunnelResult, 1)
+
+		go func() {
+			tunnels, err := weftClient.ListTunnels()
+			resultCh <- tunnelResult{tunnels: tunnels, err: err}
+		}()
+
+		var tunnels map[string]weftclient.TunnelInfo
+		select {
+		case res := <-resultCh:
+			tunnels = res.tunnels
+			err = res.err
+		case <-time.After(5 * time.Second):
+			err = fmt.Errorf("timeout listing tunnels")
+		}
+
 		if err != nil {
 			// Check if it's a connection error (server might be starting up)
-			if strings.Contains(err.Error(), "connection refused") || strings.Contains(err.Error(), "no such host") {
+			if strings.Contains(err.Error(), "connection refused") || strings.Contains(err.Error(), "no such host") || strings.Contains(err.Error(), "timeout") {
 				log.Info("Failed to connect to weft server (server might be starting)", "error", err)
 				meta.SetStatusCondition(&weftServer.Status.Conditions, metav1.Condition{
 					Type:    "Available",
