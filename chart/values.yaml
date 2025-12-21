@@ -1,7 +1,9 @@
 replicaCount: 1
 
 image:
-  url: {@//cmd:weft_operator_image_push}
+  # This placeholder is replaced by Bazel during chart build
+  # For local testing, override with --set image.url=...
+  url: "ghcr.io/aquaduct-dev/weft-operator:latest"
   pullPolicy: Always
 
 imagePullSecrets: []

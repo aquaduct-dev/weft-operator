@@ -153,25 +153,14 @@ install_chart() {
     
     cd "$REPO_ROOT"
     
-    # Create a temporary values file to override the Bazel template in values.yaml
-    # The default values.yaml contains {@//cmd:...} which is invalid YAML
-    local tmp_values
-    tmp_values=$(mktemp)
-    cat > "$tmp_values" << EOF
-image:
-  url: ${IMAGE_NAME}:${IMAGE_TAG}
-  pullPolicy: Never
-installGatewayCRDs: true
-EOF
-    
-    # Install chart with our temporary values file
+    # Install chart with test image tag and Gateway API CRDs
     helm upgrade --install "$RELEASE_NAME" ./chart \
         --namespace "$NAMESPACE" \
-        --values "$tmp_values" \
+        --set image.url="${IMAGE_NAME}:${IMAGE_TAG}" \
+        --set image.pullPolicy=Never \
+        --set installGatewayCRDs=true \
         --wait \
         --timeout 180s
-    
-    rm -f "$tmp_values"
     
     log_info "Helm chart installed successfully"
 }
