@@ -6,7 +6,6 @@ genrule(
     visibility = ["//visibility:public"],
 )
 
-
 exports_files([
     "deployment.yaml",
     "rolebinding.yaml",

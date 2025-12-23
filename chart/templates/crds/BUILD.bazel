@@ -12,5 +12,4 @@ genrule(
     visibility = ["//visibility:public"],
 )
 
-
 exports_files(["gateway-api.yaml"])

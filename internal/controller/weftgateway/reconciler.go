@@ -22,6 +22,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/url"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -152,7 +153,13 @@ func (r *WeftGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 					if listener.Hostname == nil {
 						continue
 					}
-					baseURL := fmt.Sprintf("http://%s", *listener.Hostname) // Assume HTTP for now
+
+					// Determine scheme based on listener protocol (fancy URL support)
+					scheme := "http"
+					if listener.Protocol == gatewayv1.HTTPSProtocolType {
+						scheme = "https"
+					}
+					baseURL := fmt.Sprintf("%s://%s", scheme, *listener.Hostname)
 
 					for _, match := range rule.Matches {
 						path := "/"
@@ -161,6 +168,28 @@ func (r *WeftGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 						}
 
 						fullSrcURL, _ := url.JoinPath(baseURL, path)
+
+						// Build fancy URL components for advanced matching
+						// Query params go in the query string
+						var queryParts []string
+						for _, qp := range match.QueryParams {
+							queryParts = append(queryParts, fmt.Sprintf("%s=%s", qp.Name, qp.Value))
+						}
+						if len(queryParts) > 0 {
+							fullSrcURL = fullSrcURL + "?" + strings.Join(queryParts, "&")
+						}
+
+						// Headers and method go in the fragment
+						var fragmentParts []string
+						if match.Method != nil {
+							fragmentParts = append(fragmentParts, string(*match.Method))
+						}
+						for _, h := range match.Headers {
+							fragmentParts = append(fragmentParts, fmt.Sprintf("%s=%s", h.Name, h.Value))
+						}
+						if len(fragmentParts) > 0 {
+							fullSrcURL = fullSrcURL + "#" + strings.Join(fragmentParts, "&")
+						}
 
 						// Generate Tunnel Name
 

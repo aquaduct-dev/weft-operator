@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -532,6 +533,320 @@ var _ = Describe("Weft Operator E2E", func() {
 
 			GinkgoWriter.Printf("Gateway API integration verified: WeftGateway=%s, GatewayClass=%s, Gateway=%s\n",
 				weftGatewayName, gatewayClassName, gatewayName)
+		})
+	})
+
+	// =========================================================================
+	// Gateway Fancy URL Conformance Tests
+	// =========================================================================
+	Describe("Gateway Fancy URL Conformance", func() {
+		var gatewayClassName, gatewayName, weftGatewayName, serverName string
+
+		BeforeEach(func() {
+			gatewayClassName = "e2e-fancy-url-class"
+			gatewayName = "e2e-fancy-gateway"
+			weftGatewayName = "e2e-fancy-weft-gateway"
+			serverName = "e2e-fancy-server"
+
+			// Create WeftServer with External location
+			server := &unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"apiVersion": "weft.aquaduct.dev/v1alpha1",
+					"kind":       "WeftServer",
+					"metadata": map[string]interface{}{
+						"name":      serverName,
+						"namespace": testNamespace,
+					},
+					"spec": map[string]interface{}{
+						"connectionString": "weft://fancytest@10.0.0.100:8080",
+						"location":         "External",
+					},
+				},
+			}
+			_, err := dynamicClient.Resource(weftServerGVR).Namespace(testNamespace).Create(ctx, server, metav1.CreateOptions{})
+			Expect(err).NotTo(HaveOccurred(), "Failed to create WeftServer for fancy URL test")
+		})
+
+		AfterEach(func() {
+			// Cleanup in reverse order
+			_ = dynamicClient.Resource(httpRouteGVR).Namespace(testNamespace).DeleteCollection(ctx, metav1.DeleteOptions{}, metav1.ListOptions{})
+			_ = dynamicClient.Resource(weftTunnelGVR).Namespace(testNamespace).DeleteCollection(ctx, metav1.DeleteOptions{}, metav1.ListOptions{})
+			_ = dynamicClient.Resource(gatewayGVR).Namespace(testNamespace).Delete(ctx, gatewayName, metav1.DeleteOptions{})
+			_ = dynamicClient.Resource(weftGatewayGVR).Namespace(testNamespace).Delete(ctx, weftGatewayName, metav1.DeleteOptions{})
+			_ = dynamicClient.Resource(gatewayClassGVR).Delete(ctx, gatewayClassName, metav1.DeleteOptions{})
+			_ = dynamicClient.Resource(weftServerGVR).Namespace(testNamespace).Delete(ctx, serverName, metav1.DeleteOptions{})
+			time.Sleep(2 * time.Second)
+		})
+
+		It("should create WeftTunnel with path-based fancy URL for HTTPRoute with path matcher", func() {
+			By("Creating WeftGateway with target server")
+			weftGateway := &unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"apiVersion": "weft.aquaduct.dev/v1alpha1",
+					"kind":       "WeftGateway",
+					"metadata": map[string]interface{}{
+						"name":      weftGatewayName,
+						"namespace": testNamespace,
+					},
+					"spec": map[string]interface{}{
+						"targetServers": []interface{}{serverName},
+					},
+				},
+			}
+			_, err := dynamicClient.Resource(weftGatewayGVR).Namespace(testNamespace).Create(ctx, weftGateway, metav1.CreateOptions{})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Creating GatewayClass referencing WeftGateway")
+			gatewayClass := &unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"apiVersion": "gateway.networking.k8s.io/v1",
+					"kind":       "GatewayClass",
+					"metadata": map[string]interface{}{
+						"name": gatewayClassName,
+					},
+					"spec": map[string]interface{}{
+						"controllerName": "weft.aquaduct.dev/gateway-controller",
+						"parametersRef": map[string]interface{}{
+							"group":     "weft.aquaduct.dev",
+							"kind":      "WeftGateway",
+							"name":      weftGatewayName,
+							"namespace": testNamespace,
+						},
+					},
+				},
+			}
+			_, err = dynamicClient.Resource(gatewayClassGVR).Create(ctx, gatewayClass, metav1.CreateOptions{})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Creating Gateway with HTTP listener")
+			gateway := &unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"apiVersion": "gateway.networking.k8s.io/v1",
+					"kind":       "Gateway",
+					"metadata": map[string]interface{}{
+						"name":      gatewayName,
+						"namespace": testNamespace,
+					},
+					"spec": map[string]interface{}{
+						"gatewayClassName": gatewayClassName,
+						"listeners": []interface{}{
+							map[string]interface{}{
+								"name":     "http",
+								"protocol": "HTTP",
+								"port":     int64(80),
+								"hostname": "fancy-api.example.com",
+							},
+						},
+					},
+				},
+			}
+			_, err = dynamicClient.Resource(gatewayGVR).Namespace(testNamespace).Create(ctx, gateway, metav1.CreateOptions{})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Creating HTTPRoute with path matcher")
+			httpRoute := &unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"apiVersion": "gateway.networking.k8s.io/v1",
+					"kind":       "HTTPRoute",
+					"metadata": map[string]interface{}{
+						"name":      "fancy-path-route",
+						"namespace": testNamespace,
+					},
+					"spec": map[string]interface{}{
+						"parentRefs": []interface{}{
+							map[string]interface{}{
+								"name": gatewayName,
+							},
+						},
+						"rules": []interface{}{
+							map[string]interface{}{
+								"matches": []interface{}{
+									map[string]interface{}{
+										"path": map[string]interface{}{
+											"type":  "PathPrefix",
+											"value": "/api/v1",
+										},
+									},
+								},
+								"backendRefs": []interface{}{
+									map[string]interface{}{
+										"name": "api-backend",
+										"port": int64(8080),
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+			_, err = dynamicClient.Resource(httpRouteGVR).Namespace(testNamespace).Create(ctx, httpRoute, metav1.CreateOptions{})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying WeftTunnel is created with path in SrcURL")
+			Eventually(func() bool {
+				tunnels, err := dynamicClient.Resource(weftTunnelGVR).Namespace(testNamespace).List(ctx, metav1.ListOptions{
+					LabelSelector: fmt.Sprintf("gateway=%s", gatewayName),
+				})
+				if err != nil || len(tunnels.Items) == 0 {
+					return false
+				}
+
+				for _, tunnel := range tunnels.Items {
+					routes, found, _ := unstructured.NestedSlice(tunnel.Object, "spec", "routes")
+					if !found || len(routes) == 0 {
+						continue
+					}
+					route := routes[0].(map[string]interface{})
+					srcURL, _, _ := unstructured.NestedString(route, "srcURL")
+					// Should include path in fancy URL
+					if srcURL == "http://fancy-api.example.com/api/v1" {
+						GinkgoWriter.Printf("Found WeftTunnel with fancy URL: %s\n", srcURL)
+						return true
+					}
+				}
+				return false
+			}, timeout, interval).Should(BeTrue(), "WeftTunnel should have SrcURL with path")
+
+			GinkgoWriter.Printf("Gateway Fancy URL conformance verified for path matching\n")
+		})
+
+		It("should create WeftTunnel with header matching in fancy URL fragment", func() {
+			By("Creating WeftGateway with target server")
+			weftGateway := &unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"apiVersion": "weft.aquaduct.dev/v1alpha1",
+					"kind":       "WeftGateway",
+					"metadata": map[string]interface{}{
+						"name":      weftGatewayName,
+						"namespace": testNamespace,
+					},
+					"spec": map[string]interface{}{
+						"targetServers": []interface{}{serverName},
+					},
+				},
+			}
+			_, err := dynamicClient.Resource(weftGatewayGVR).Namespace(testNamespace).Create(ctx, weftGateway, metav1.CreateOptions{})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Creating GatewayClass referencing WeftGateway")
+			gatewayClass := &unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"apiVersion": "gateway.networking.k8s.io/v1",
+					"kind":       "GatewayClass",
+					"metadata": map[string]interface{}{
+						"name": gatewayClassName,
+					},
+					"spec": map[string]interface{}{
+						"controllerName": "weft.aquaduct.dev/gateway-controller",
+						"parametersRef": map[string]interface{}{
+							"group":     "weft.aquaduct.dev",
+							"kind":      "WeftGateway",
+							"name":      weftGatewayName,
+							"namespace": testNamespace,
+						},
+					},
+				},
+			}
+			_, err = dynamicClient.Resource(gatewayClassGVR).Create(ctx, gatewayClass, metav1.CreateOptions{})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Creating Gateway")
+			gateway := &unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"apiVersion": "gateway.networking.k8s.io/v1",
+					"kind":       "Gateway",
+					"metadata": map[string]interface{}{
+						"name":      gatewayName,
+						"namespace": testNamespace,
+					},
+					"spec": map[string]interface{}{
+						"gatewayClassName": gatewayClassName,
+						"listeners": []interface{}{
+							map[string]interface{}{
+								"name":     "http",
+								"protocol": "HTTP",
+								"port":     int64(80),
+								"hostname": "header-api.example.com",
+							},
+						},
+					},
+				},
+			}
+			_, err = dynamicClient.Resource(gatewayGVR).Namespace(testNamespace).Create(ctx, gateway, metav1.CreateOptions{})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Creating HTTPRoute with header matcher")
+			httpRoute := &unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"apiVersion": "gateway.networking.k8s.io/v1",
+					"kind":       "HTTPRoute",
+					"metadata": map[string]interface{}{
+						"name":      "header-match-route",
+						"namespace": testNamespace,
+					},
+					"spec": map[string]interface{}{
+						"parentRefs": []interface{}{
+							map[string]interface{}{
+								"name": gatewayName,
+							},
+						},
+						"rules": []interface{}{
+							map[string]interface{}{
+								"matches": []interface{}{
+									map[string]interface{}{
+										"path": map[string]interface{}{
+											"type":  "PathPrefix",
+											"value": "/secure",
+										},
+										"headers": []interface{}{
+											map[string]interface{}{
+												"type":  "Exact",
+												"name":  "Authorization",
+												"value": "Bearer.*",
+											},
+										},
+									},
+								},
+								"backendRefs": []interface{}{
+									map[string]interface{}{
+										"name": "secure-backend",
+										"port": int64(8443),
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+			_, err = dynamicClient.Resource(httpRouteGVR).Namespace(testNamespace).Create(ctx, httpRoute, metav1.CreateOptions{})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying WeftTunnel is created with header in fragment")
+			Eventually(func() bool {
+				tunnels, err := dynamicClient.Resource(weftTunnelGVR).Namespace(testNamespace).List(ctx, metav1.ListOptions{
+					LabelSelector: fmt.Sprintf("gateway=%s", gatewayName),
+				})
+				if err != nil || len(tunnels.Items) == 0 {
+					return false
+				}
+
+				for _, tunnel := range tunnels.Items {
+					routes, found, _ := unstructured.NestedSlice(tunnel.Object, "spec", "routes")
+					if !found || len(routes) == 0 {
+						continue
+					}
+					route := routes[0].(map[string]interface{})
+					srcURL, _, _ := unstructured.NestedString(route, "srcURL")
+					// Should include header in fragment (fancy URL syntax)
+					if srcURL != "" && (strings.Contains(srcURL, "#") && strings.Contains(srcURL, "Authorization=")) {
+						GinkgoWriter.Printf("Found WeftTunnel with header fancy URL: %s\n", srcURL)
+						return true
+					}
+				}
+				return false
+			}, timeout, interval).Should(BeTrue(), "WeftTunnel should have SrcURL with header in fragment")
+
+			GinkgoWriter.Printf("Gateway Fancy URL conformance verified for header matching\n")
 		})
 	})
 

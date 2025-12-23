@@ -15,7 +15,6 @@ go_library(
         "//api/v1alpha1",
         "//internal/resource",
         "@io_k8s_api//networking/v1:networking",
-        "@io_k8s_apimachinery//pkg/api/meta",
         "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
         "@io_k8s_apimachinery//pkg/runtime",
         "@io_k8s_apimachinery//pkg/types",

@@ -39,15 +39,16 @@ go_library(
 go_test(
     name = "weftserver_test",
     srcs = [
+        "node_prober_process_node_test.go",
         "node_prober_test.go",
         "reconciler_test.go",
         "suite_test.go",
     ],
     data = [
         "//api/v1alpha1:generated.crds",
+        "//chart/templates/crds:copy_crds",
         "//chart/templates/crds:gateway_crds",
         "//tools/envtest:etcd",
-        "//chart/templates/crds:copy_crds",
         "//tools/envtest:kube-apiserver",
         "//tools/envtest:kubectl",
     ],
@@ -66,6 +67,7 @@ go_test(
         "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
         "@io_k8s_apimachinery//pkg/runtime",
         "@io_k8s_apimachinery//pkg/types",
+        "@io_k8s_client_go//kubernetes/fake",
         "@io_k8s_client_go//kubernetes/scheme",
         "@io_k8s_client_go//rest",
         "@io_k8s_sigs_controller_runtime//:controller-runtime",

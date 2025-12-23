@@ -36,8 +36,8 @@ go_test(
     ],
     data = [
         "//api/v1alpha1:generated.crds",
-        "//chart/templates/crds:gateway_crds",
         "//chart/templates/crds:copy_crds",
+        "//chart/templates/crds:gateway_crds",
         "//tools/envtest:etcd",
         "//tools/envtest:kube-apiserver",
         "//tools/envtest:kubectl",
