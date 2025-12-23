@@ -140,13 +140,21 @@ func (r *WeftTunnelReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			"created-by": "weft-operator",
 		}
 
-		// Command: weft tunnel --tunnel-name=<name> <targetURL> <srcURL> <dstURL>
+		// Command: weft tunnel --tunnel-name=<name> <targetURL> <srcURL1> <dstURL1> <srcURL2> <dstURL2> ...
 		cmdArgs := []string{
 			"tunnel",
 			fmt.Sprintf("--tunnel-name=%s", weftTunnel.Name),
 			targetURL,
-			weftTunnel.Spec.SrcURL,
-			weftTunnel.Spec.DstURL,
+		}
+
+		// Use Routes if defined, otherwise fall back to deprecated SrcURL/DstURL
+		if len(weftTunnel.Spec.Routes) > 0 {
+			for _, route := range weftTunnel.Spec.Routes {
+				cmdArgs = append(cmdArgs, route.SrcURL, route.DstURL)
+			}
+		} else if weftTunnel.Spec.SrcURL != "" && weftTunnel.Spec.DstURL != "" {
+			// Backward compatibility with deprecated fields
+			cmdArgs = append(cmdArgs, weftTunnel.Spec.SrcURL, weftTunnel.Spec.DstURL)
 		}
 
 		op, err := controllerutil.CreateOrUpdate(ctx, r.Client, dep, func() error {

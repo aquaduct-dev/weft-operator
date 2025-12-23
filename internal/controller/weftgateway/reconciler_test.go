@@ -124,8 +124,9 @@ var _ = Describe("WeftGateway Controller", func() {
 			}, timeout, interval).Should(Equal(1))
 
 			tunnel := tunnelList.Items[0]
-			Expect(tunnel.Spec.DstURL).To(Equal("http://my-service.default.svc:8080"))
-			Expect(tunnel.Spec.SrcURL).To(Equal("http://test.example.com/api"))
+			Expect(tunnel.Spec.Routes).To(HaveLen(1))
+			Expect(tunnel.Spec.Routes[0].DstURL).To(Equal("http://my-service.default.svc:8080"))
+			Expect(tunnel.Spec.Routes[0].SrcURL).To(Equal("http://test.example.com/api"))
 		})
 	})
 })

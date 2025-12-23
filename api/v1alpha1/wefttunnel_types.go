@@ -20,16 +20,31 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// TunnelRoute defines a single source-to-destination URL mapping for a tunnel.
+type TunnelRoute struct {
+	// SrcURL is the source URL for this route.
+	SrcURL string `json:"srcURL"`
+
+	// DstURL is the destination URL for this route.
+	DstURL string `json:"dstURL"`
+}
+
 // WeftTunnelSpec defines the desired state of WeftTunnel
 type WeftTunnelSpec struct {
 	// TargetServers is a list of WeftServer names this tunnel should connect to.
 	// If empty, it connects to all available WeftServers.
 	TargetServers []string `json:"targetServers,omitempty"`
 
+	// Routes is a list of source-to-destination URL mappings for this tunnel.
+	// Each route defines a separate src/dst pair that the tunnel will handle.
+	Routes []TunnelRoute `json:"routes,omitempty"`
+
 	// SrcURL is the source URL for the tunnel.
+	// Deprecated: Use Routes instead. If Routes is non-empty, this field is ignored.
 	SrcURL string `json:"srcURL,omitempty"`
 
 	// DstURL is the destination URL for the tunnel.
+	// Deprecated: Use Routes instead. If Routes is non-empty, this field is ignored.
 	DstURL string `json:"dstURL,omitempty"`
 }
 

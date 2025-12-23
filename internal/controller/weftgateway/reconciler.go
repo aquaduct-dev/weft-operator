@@ -177,8 +177,9 @@ func (r *WeftGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 						}
 						op, err := controllerutil.CreateOrUpdate(ctx, r.Client, tunnel, func() error {
 							tunnel.Spec.TargetServers = targetServers
-							tunnel.Spec.SrcURL = fullSrcURL
-							tunnel.Spec.DstURL = dstURL
+							tunnel.Spec.Routes = []weftv1alpha1.TunnelRoute{
+								{SrcURL: fullSrcURL, DstURL: dstURL},
+							}
 							labels := map[string]string{
 								"app":        "weft-gateway-tunnel",
 								"gateway":    gateway.Name,
