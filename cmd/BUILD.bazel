@@ -11,6 +11,7 @@ go_library(
         "//api/v1alpha1",
         "//internal/controller/aquaducttaas",
         "//internal/controller/weftgateway",
+        "//internal/controller/weftingress",
         "//internal/controller/weftserver",
         "//internal/controller/wefttunnel",
         "@io_k8s_apimachinery//pkg/runtime",

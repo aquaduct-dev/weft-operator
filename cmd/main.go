@@ -36,6 +36,7 @@ import (
 	weftv1alpha1 "aquaduct.dev/weft-operator/api/v1alpha1"
 	"aquaduct.dev/weft-operator/internal/controller/aquaducttaas"
 	"aquaduct.dev/weft-operator/internal/controller/weftgateway"
+	"aquaduct.dev/weft-operator/internal/controller/weftingress"
 	"aquaduct.dev/weft-operator/internal/controller/weftserver"
 	"aquaduct.dev/weft-operator/internal/controller/wefttunnel"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -128,6 +129,13 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "WeftGateway")
+		os.Exit(1)
+	}
+	if err := (&weftingress.WeftIngressReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "WeftIngress")
 		os.Exit(1)
 	}
 
