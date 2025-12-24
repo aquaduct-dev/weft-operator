@@ -7,6 +7,7 @@ controller_gen(
         ":api_types",
         "//internal/controller/aquaducttaas:srcs",
         "//internal/controller/weftgateway:srcs",
+        "//internal/controller/weftingress:srcs",
         "//internal/controller/weftserver:srcs",
         "//internal/controller/wefttunnel:srcs",
         "//internal/resource:srcs",

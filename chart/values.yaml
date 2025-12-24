@@ -3,7 +3,7 @@ replicaCount: 1
 image:
   # This placeholder is replaced by Bazel during chart build
   # For local testing, override with --set image.url=...
-  url: "ghcr.io/aquaduct-dev/weft-operator:latest"
+  url: "{bazel.image.url}"
   pullPolicy: Always
 
 imagePullSecrets: []
