@@ -223,20 +223,37 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 				dep.Spec.Selector = &metav1.LabelSelector{
 					MatchLabels: labels,
 				}
-				dep.Spec.Replicas = int32Ptr(1)
-				dep.Spec.Strategy.Type = appsv1.RecreateDeploymentStrategyType
-				dep.Spec.Template.ObjectMeta.Labels = labels
-				dep.Spec.Template.Spec.HostNetwork = true
-				dep.Spec.Template.Spec.Volumes = []corev1.Volume{
-					{
-						Name: "certs",
-						VolumeSource: corev1.VolumeSource{
-							PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-								ClaimName: pvc.Name,
-							},
-						},
-					},
-				}
+				                dep.Spec.Replicas = int32Ptr(1)
+				                dep.Spec.Strategy.Type = appsv1.RecreateDeploymentStrategyType
+				                dep.Spec.Template.ObjectMeta.Labels = labels
+				                dep.Spec.Template.Spec.HostNetwork = true
+				                dep.Spec.Template.Spec.Affinity = &corev1.Affinity{
+				                    NodeAffinity: &corev1.NodeAffinity{
+				                        				RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{				                            NodeSelectorTerms: []corev1.NodeSelectorTerm{
+				                                {
+				                                    MatchExpressions: []corev1.NodeSelectorRequirement{
+				                                        {
+				                                            Key:      "node.kubernetes.io/role",
+				                                            Operator: corev1.NodeSelectorOpNotIn,
+				                                            Values:   []string{"autoscaler-node"},
+				                                        },
+				                                    },
+				                                },
+				                            },
+				                        },
+				                    },
+				                }
+				                dep.Spec.Template.Spec.Volumes = []corev1.Volume{
+				                    {
+				                        Name: "certs",
+				                        VolumeSource: corev1.VolumeSource{
+				                            PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+				                                ClaimName: pvc.Name,
+				                            },
+				                        },
+				                    },
+				                }
+				
 				dep.Spec.Template.Spec.Containers = []corev1.Container{
 					{
 						Name:            "server",
@@ -264,6 +281,23 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 				dep.Spec.Replicas = int32Ptr(1)
 				dep.Spec.Template.ObjectMeta.Labels = labels
 				dep.Spec.Template.Spec.HostNetwork = true
+				dep.Spec.Template.Spec.Affinity = &corev1.Affinity{
+					NodeAffinity: &corev1.NodeAffinity{
+						RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+							NodeSelectorTerms: []corev1.NodeSelectorTerm{
+								{
+									MatchExpressions: []corev1.NodeSelectorRequirement{
+										{
+											Key:      "node.kubernetes.io/role",
+											Operator: corev1.NodeSelectorOpNotIn,
+											Values:   []string{"autoscaler-node"},
+										},
+									},
+								},
+							},
+						},
+					},
+				}
 				dep.Spec.Template.Spec.Volumes = []corev1.Volume{
 					{
 						Name: "certs",
