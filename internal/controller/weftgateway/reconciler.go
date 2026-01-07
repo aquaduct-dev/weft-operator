@@ -22,6 +22,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/url"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -37,6 +38,7 @@ import (
 	weftv1alpha1 "aquaduct.dev/weft-operator/api/v1alpha1"
 	"aquaduct.dev/weft-operator/internal/resource"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 )
 
 const (
@@ -52,7 +54,11 @@ type WeftGatewayReconciler struct {
 //+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=get;list;watch;update;patch
 //+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gatewayclasses,verbs=get;list;watch
+//+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gatewayclasses/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch
+//+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=tcproutes,verbs=get;list;watch
+//+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=tlsroutes,verbs=get;list;watch
+//+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=udproutes,verbs=get;list;watch
 //+kubebuilder:rbac:groups=weft.aquaduct.dev,resources=weftgateways,verbs=get;list;watch
 //+kubebuilder:rbac:groups=weft.aquaduct.dev,resources=wefttunnels,verbs=get;list;watch;create;update;patch;delete
 
@@ -69,11 +75,18 @@ func (r *WeftGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	var gwClass gatewayv1.GatewayClass
 	if err := r.Get(ctx, types.NamespacedName{Name: string(gateway.Spec.GatewayClassName)}, &gwClass); err != nil {
 		log.Error(err, "Failed to get GatewayClass", "gatewayClass", gateway.Spec.GatewayClassName)
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		// Return error with requeue to retry when GatewayClass becomes available
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, err
 	}
 
 	if gwClass.Spec.ControllerName != ControllerName {
 		return ctrl.Result{}, nil
+	}
+
+	// Update GatewayClass status to indicate we've accepted it
+	if err := r.updateGatewayClassStatus(ctx, &gwClass); err != nil {
+		log.Error(err, "Failed to update GatewayClass status")
+		// Don't fail the reconciliation for status update failure
 	}
 
 	// Get WeftGateway config if present
@@ -118,7 +131,6 @@ func (r *WeftGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 		for _, rule := range route.Spec.Rules {
 			for _, backend := range rule.BackendRefs {
-				// We only support Service backends
 				kind := "Service"
 				if backend.Kind != nil {
 					kind = string(*backend.Kind)
@@ -127,7 +139,7 @@ func (r *WeftGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 					continue
 				}
 
-				// Construct DstURL
+				// Construct SrcURL (internal cluster service)
 				// http://<service>.<namespace>.svc:<port>
 				ns := route.Namespace
 				if backend.Namespace != nil {
@@ -139,20 +151,25 @@ func (r *WeftGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 					port = int32(*backend.Port)
 				}
 
-				dstURL := fmt.Sprintf("http://%s.%s.svc:%d", backend.Name, ns, port)
+				srcURL := fmt.Sprintf("http://%s.%s.svc:%d", backend.Name, ns, port)
 
-				// Construct SrcURL
+				// Construct DstURL (external hostname + path)
 				// Matches are complicated. Simplifying:
 				// If we have path match, append to gateway listener hostname.
 				// Gateway Listeners:
 				for _, listener := range gateway.Spec.Listeners {
 					// Check if route attaches to this listener (simplified)
 
-					// Assume Listener Hostname is the base
+					// Assume Listener Hostname is the base for DstURL (external hostname)
 					if listener.Hostname == nil {
 						continue
 					}
-					baseURL := fmt.Sprintf("http://%s", *listener.Hostname) // Assume HTTP for now
+					// Determine scheme based on listener protocol
+					scheme := "http"
+					if listener.Protocol == gatewayv1.HTTPSProtocolType {
+						scheme = "https"
+					}
+					baseURL := fmt.Sprintf("%s://%s", scheme, *listener.Hostname)
 
 					for _, match := range rule.Matches {
 						path := "/"
@@ -160,11 +177,11 @@ func (r *WeftGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 							path = *match.Path.Value
 						}
 
-						fullSrcURL, _ := url.JoinPath(baseURL, path)
+						dstURL, _ := url.JoinPath(baseURL, path)
 
 						// Generate Tunnel Name
 
-						hash := sha256.Sum256([]byte(fmt.Sprintf("%s-%s-%s", gateway.Name, route.Name, fullSrcURL)))
+						hash := sha256.Sum256([]byte(fmt.Sprintf("%s-%s-%s", gateway.Name, route.Name, dstURL)))
 						hashStr := hex.EncodeToString(hash[:])[:8]
 						tunnelName := fmt.Sprintf("gw-%s-%s", gateway.Name, hashStr)
 						expectedTunnels[tunnelName] = true
@@ -177,7 +194,7 @@ func (r *WeftGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 						}
 						op, err := controllerutil.CreateOrUpdate(ctx, r.Client, tunnel, func() error {
 							tunnel.Spec.TargetServers = targetServers
-							tunnel.Spec.SrcURL = fullSrcURL
+							tunnel.Spec.SrcURL = srcURL
 							tunnel.Spec.DstURL = dstURL
 							labels := map[string]string{
 								"app":        "weft-gateway-tunnel",
@@ -200,6 +217,191 @@ func (r *WeftGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 						if op != controllerutil.OperationResultNone {
 							log.Info("WeftTunnel reconciled", "tunnel", tunnelName, "operation", op)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Find TCPRoutes attached to this Gateway
+	var tcpRoutes gatewayv1alpha2.TCPRouteList
+	if err := r.List(ctx, &tcpRoutes, client.InNamespace(req.Namespace)); err != nil {
+		log.Error(err, "Failed to list TCPRoutes")
+		// Continue with other route types
+	} else {
+		for _, route := range tcpRoutes.Items {
+			if !r.isTCPRouteAttachedToGateway(&route, &gateway) {
+				continue
+			}
+
+			for _, rule := range route.Spec.Rules {
+				for _, backend := range rule.BackendRefs {
+					kind := "Service"
+					if backend.Kind != nil {
+						kind = string(*backend.Kind)
+					}
+					if kind != "Service" {
+						continue
+					}
+
+					ns := route.Namespace
+					if backend.Namespace != nil {
+						ns = string(*backend.Namespace)
+					}
+
+					port := int32(0)
+					if backend.Port != nil {
+						port = int32(*backend.Port)
+					}
+
+					srcURL := fmt.Sprintf("tcp://%s.%s.svc:%d", backend.Name, ns, port)
+
+					// For TCP routes, use TCP listener to determine destination
+					for _, listener := range gateway.Spec.Listeners {
+						if listener.Protocol != gatewayv1.TCPProtocolType {
+							continue
+						}
+						if listener.Hostname == nil {
+							// TCP routes typically use port-based routing, not hostname
+							// Use the listener port as the destination
+							dstURL := fmt.Sprintf("tcp://:%d", listener.Port)
+
+							hash := sha256.Sum256([]byte(fmt.Sprintf("%s-%s-%s", gateway.Name, route.Name, dstURL)))
+							hashStr := hex.EncodeToString(hash[:])[:8]
+							tunnelName := fmt.Sprintf("gw-%s-%s", gateway.Name, hashStr)
+							expectedTunnels[tunnelName] = true
+
+							if err := r.createOrUpdateTunnel(ctx, tunnelName, srcURL, dstURL, targetServers, &gateway, route.Name, log); err != nil {
+								return ctrl.Result{}, err
+							}
+						} else {
+							// Hostname-based TCP routing
+							dstURL := fmt.Sprintf("tcp://%s:%d", *listener.Hostname, listener.Port)
+
+							hash := sha256.Sum256([]byte(fmt.Sprintf("%s-%s-%s", gateway.Name, route.Name, dstURL)))
+							hashStr := hex.EncodeToString(hash[:])[:8]
+							tunnelName := fmt.Sprintf("gw-%s-%s", gateway.Name, hashStr)
+							expectedTunnels[tunnelName] = true
+
+							if err := r.createOrUpdateTunnel(ctx, tunnelName, srcURL, dstURL, targetServers, &gateway, route.Name, log); err != nil {
+								return ctrl.Result{}, err
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Find TLSRoutes attached to this Gateway (TLS passthrough)
+	var tlsRoutes gatewayv1alpha2.TLSRouteList
+	if err := r.List(ctx, &tlsRoutes, client.InNamespace(req.Namespace)); err != nil {
+		log.Error(err, "Failed to list TLSRoutes")
+		// Continue with other route types
+	} else {
+		for _, route := range tlsRoutes.Items {
+			if !r.isTLSRouteAttachedToGateway(&route, &gateway) {
+				continue
+			}
+
+			for _, rule := range route.Spec.Rules {
+				for _, backend := range rule.BackendRefs {
+					kind := "Service"
+					if backend.Kind != nil {
+						kind = string(*backend.Kind)
+					}
+					if kind != "Service" {
+						continue
+					}
+
+					ns := route.Namespace
+					if backend.Namespace != nil {
+						ns = string(*backend.Namespace)
+					}
+
+					port := int32(443)
+					if backend.Port != nil {
+						port = int32(*backend.Port)
+					}
+
+					// TLS passthrough: both src and dst use https (re-encrypt)
+					srcURL := fmt.Sprintf("https://%s.%s.svc:%d", backend.Name, ns, port)
+
+					for _, listener := range gateway.Spec.Listeners {
+						if listener.Protocol != gatewayv1.TLSProtocolType {
+							continue
+						}
+						if listener.Hostname == nil {
+							continue
+						}
+
+						dstURL := fmt.Sprintf("https://%s", *listener.Hostname)
+
+						hash := sha256.Sum256([]byte(fmt.Sprintf("%s-%s-%s", gateway.Name, route.Name, dstURL)))
+						hashStr := hex.EncodeToString(hash[:])[:8]
+						tunnelName := fmt.Sprintf("gw-%s-%s", gateway.Name, hashStr)
+						expectedTunnels[tunnelName] = true
+
+						if err := r.createOrUpdateTunnel(ctx, tunnelName, srcURL, dstURL, targetServers, &gateway, route.Name, log); err != nil {
+							return ctrl.Result{}, err
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Find UDPRoutes attached to this Gateway
+	var udpRoutes gatewayv1alpha2.UDPRouteList
+	if err := r.List(ctx, &udpRoutes, client.InNamespace(req.Namespace)); err != nil {
+		log.Error(err, "Failed to list UDPRoutes")
+		// Continue with other route types
+	} else {
+		for _, route := range udpRoutes.Items {
+			if !r.isUDPRouteAttachedToGateway(&route, &gateway) {
+				continue
+			}
+
+			for _, rule := range route.Spec.Rules {
+				for _, backend := range rule.BackendRefs {
+					kind := "Service"
+					if backend.Kind != nil {
+						kind = string(*backend.Kind)
+					}
+					if kind != "Service" {
+						continue
+					}
+
+					ns := route.Namespace
+					if backend.Namespace != nil {
+						ns = string(*backend.Namespace)
+					}
+
+					port := int32(0)
+					if backend.Port != nil {
+						port = int32(*backend.Port)
+					}
+
+					srcURL := fmt.Sprintf("udp://%s.%s.svc:%d", backend.Name, ns, port)
+
+					for _, listener := range gateway.Spec.Listeners {
+						if listener.Protocol != gatewayv1.UDPProtocolType {
+							continue
+						}
+
+						dstURL := fmt.Sprintf("udp://:%d", listener.Port)
+						if listener.Hostname != nil {
+							dstURL = fmt.Sprintf("udp://%s:%d", *listener.Hostname, listener.Port)
+						}
+
+						hash := sha256.Sum256([]byte(fmt.Sprintf("%s-%s-%s", gateway.Name, route.Name, dstURL)))
+						hashStr := hex.EncodeToString(hash[:])[:8]
+						tunnelName := fmt.Sprintf("gw-%s-%s", gateway.Name, hashStr)
+						expectedTunnels[tunnelName] = true
+
+						if err := r.createOrUpdateTunnel(ctx, tunnelName, srcURL, dstURL, targetServers, &gateway, route.Name, log); err != nil {
+							return ctrl.Result{}, err
 						}
 					}
 				}
@@ -264,6 +466,25 @@ func (r *WeftGatewayReconciler) isRouteAttachedToGateway(route *gatewayv1.HTTPRo
 	return false
 }
 
+func (r *WeftGatewayReconciler) updateGatewayClassStatus(ctx context.Context, gwClass *gatewayv1.GatewayClass) error {
+	// Only update if not already accepted
+	for _, cond := range gwClass.Status.Conditions {
+		if cond.Type == string(gatewayv1.GatewayClassConditionStatusAccepted) && cond.Status == metav1.ConditionTrue {
+			return nil // Already accepted
+		}
+	}
+
+	meta.SetStatusCondition(&gwClass.Status.Conditions, metav1.Condition{
+		Type:               string(gatewayv1.GatewayClassConditionStatusAccepted),
+		Status:             metav1.ConditionTrue,
+		Reason:             string(gatewayv1.GatewayClassReasonAccepted),
+		Message:            "GatewayClass accepted by weft-operator",
+		ObservedGeneration: gwClass.Generation,
+	})
+
+	return r.Status().Update(ctx, gwClass)
+}
+
 func (r *WeftGatewayReconciler) updateGatewayStatus(ctx context.Context, gw *gatewayv1.Gateway) error {
 	// Determine condition based on Tunnel status?
 	// For now, just mark Accepted/Programmed
@@ -294,22 +515,63 @@ func (r *WeftGatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&weftv1alpha1.WeftTunnel{}).
 		Watches(
 			&gatewayv1.HTTPRoute{},
-			handler.EnqueueRequestsFromMapFunc(r.findGatewaysForRoute),
+			handler.EnqueueRequestsFromMapFunc(r.findGatewaysForHTTPRoute),
+		).
+		Watches(
+			&gatewayv1alpha2.TCPRoute{},
+			handler.EnqueueRequestsFromMapFunc(r.findGatewaysForTCPRoute),
+		).
+		Watches(
+			&gatewayv1alpha2.TLSRoute{},
+			handler.EnqueueRequestsFromMapFunc(r.findGatewaysForTLSRoute),
+		).
+		Watches(
+			&gatewayv1alpha2.UDPRoute{},
+			handler.EnqueueRequestsFromMapFunc(r.findGatewaysForUDPRoute),
+		).
+		Watches(
+			&gatewayv1.GatewayClass{},
+			handler.EnqueueRequestsFromMapFunc(r.findGatewaysForClass),
 		).
 		Complete(r)
 }
 
-func (r *WeftGatewayReconciler) findGatewaysForRoute(ctx context.Context, obj client.Object) []reconcile.Request {
+func (r *WeftGatewayReconciler) findGatewaysForHTTPRoute(ctx context.Context, obj client.Object) []reconcile.Request {
 	route, ok := obj.(*gatewayv1.HTTPRoute)
 	if !ok {
 		return nil
 	}
+	return r.findGatewaysFromParentRefs(route.Namespace, route.Spec.ParentRefs)
+}
 
+func (r *WeftGatewayReconciler) findGatewaysForTCPRoute(ctx context.Context, obj client.Object) []reconcile.Request {
+	route, ok := obj.(*gatewayv1alpha2.TCPRoute)
+	if !ok {
+		return nil
+	}
+	return r.findGatewaysFromParentRefs(route.Namespace, route.Spec.ParentRefs)
+}
+
+func (r *WeftGatewayReconciler) findGatewaysForTLSRoute(ctx context.Context, obj client.Object) []reconcile.Request {
+	route, ok := obj.(*gatewayv1alpha2.TLSRoute)
+	if !ok {
+		return nil
+	}
+	return r.findGatewaysFromParentRefs(route.Namespace, route.Spec.ParentRefs)
+}
+
+func (r *WeftGatewayReconciler) findGatewaysForUDPRoute(ctx context.Context, obj client.Object) []reconcile.Request {
+	route, ok := obj.(*gatewayv1alpha2.UDPRoute)
+	if !ok {
+		return nil
+	}
+	return r.findGatewaysFromParentRefs(route.Namespace, route.Spec.ParentRefs)
+}
+
+func (r *WeftGatewayReconciler) findGatewaysFromParentRefs(routeNamespace string, parentRefs []gatewayv1.ParentReference) []reconcile.Request {
 	var requests []reconcile.Request
-	for _, parent := range route.Spec.ParentRefs {
-		// Check Kind/Group if necessary (defaults to Gateway/gateway.networking.k8s.io)
-
-		ns := route.Namespace
+	for _, parent := range parentRefs {
+		ns := routeNamespace
 		if parent.Namespace != nil {
 			ns = string(*parent.Namespace)
 		}
@@ -322,4 +584,117 @@ func (r *WeftGatewayReconciler) findGatewaysForRoute(ctx context.Context, obj cl
 		})
 	}
 	return requests
+}
+
+// findGatewaysForClass returns reconcile requests for all Gateways that reference the given GatewayClass.
+func (r *WeftGatewayReconciler) findGatewaysForClass(ctx context.Context, obj client.Object) []reconcile.Request {
+	gwClass, ok := obj.(*gatewayv1.GatewayClass)
+	if !ok {
+		return nil
+	}
+
+	// Only process if this is our controller
+	if gwClass.Spec.ControllerName != ControllerName {
+		return nil
+	}
+
+	// Find all Gateways that reference this GatewayClass
+	var gatewayList gatewayv1.GatewayList
+	if err := r.List(ctx, &gatewayList); err != nil {
+		return nil
+	}
+
+	var requests []reconcile.Request
+	for _, gw := range gatewayList.Items {
+		if string(gw.Spec.GatewayClassName) == gwClass.Name {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      gw.Name,
+					Namespace: gw.Namespace,
+				},
+			})
+		}
+	}
+	return requests
+}
+
+// isTCPRouteAttachedToGateway checks if a TCPRoute references the given Gateway
+func (r *WeftGatewayReconciler) isTCPRouteAttachedToGateway(route *gatewayv1alpha2.TCPRoute, gateway *gatewayv1.Gateway) bool {
+	for _, parent := range route.Spec.ParentRefs {
+		if string(parent.Name) == gateway.Name {
+			if parent.Namespace != nil && string(*parent.Namespace) != gateway.Namespace {
+				continue
+			}
+			return true
+		}
+	}
+	return false
+}
+
+// isTLSRouteAttachedToGateway checks if a TLSRoute references the given Gateway
+func (r *WeftGatewayReconciler) isTLSRouteAttachedToGateway(route *gatewayv1alpha2.TLSRoute, gateway *gatewayv1.Gateway) bool {
+	for _, parent := range route.Spec.ParentRefs {
+		if string(parent.Name) == gateway.Name {
+			if parent.Namespace != nil && string(*parent.Namespace) != gateway.Namespace {
+				continue
+			}
+			return true
+		}
+	}
+	return false
+}
+
+// isUDPRouteAttachedToGateway checks if a UDPRoute references the given Gateway
+func (r *WeftGatewayReconciler) isUDPRouteAttachedToGateway(route *gatewayv1alpha2.UDPRoute, gateway *gatewayv1.Gateway) bool {
+	for _, parent := range route.Spec.ParentRefs {
+		if string(parent.Name) == gateway.Name {
+			if parent.Namespace != nil && string(*parent.Namespace) != gateway.Namespace {
+				continue
+			}
+			return true
+		}
+	}
+	return false
+}
+
+// createOrUpdateTunnel creates or updates a WeftTunnel resource
+func (r *WeftGatewayReconciler) createOrUpdateTunnel(
+	ctx context.Context,
+	tunnelName, srcURL, dstURL string,
+	targetServers []string,
+	gateway *gatewayv1.Gateway,
+	routeName string,
+	log interface{ Info(msg string, keysAndValues ...any); Error(err error, msg string, keysAndValues ...any) },
+) error {
+	tunnel := &weftv1alpha1.WeftTunnel{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      tunnelName,
+			Namespace: gateway.Namespace,
+		},
+	}
+
+	op, err := controllerutil.CreateOrUpdate(ctx, r.Client, tunnel, func() error {
+		tunnel.Spec.TargetServers = targetServers
+		tunnel.Spec.SrcURL = srcURL
+		tunnel.Spec.DstURL = dstURL
+		labels := map[string]string{
+			"app":        "weft-gateway-tunnel",
+			"gateway":    gateway.Name,
+			"route":      routeName,
+			"created-by": "weft-operator",
+		}
+
+		tunnel.ObjectMeta.Labels = labels
+
+		return controllerutil.SetControllerReference(gateway, tunnel, r.Scheme)
+	})
+	if err != nil {
+		log.Error(err, "Failed to reconcile WeftTunnel", "tunnel", tunnelName)
+		return err
+	}
+
+	if op != controllerutil.OperationResultNone {
+		log.Info("WeftTunnel reconciled", "tunnel", tunnelName, "operation", op)
+	}
+	return nil
 }

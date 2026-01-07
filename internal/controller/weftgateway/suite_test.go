@@ -37,6 +37,7 @@ import (
 
 	weftv1alpha1 "aquaduct.dev/weft-operator/api/v1alpha1"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 	//+kubebuilder:scaffold:imports
 )
 
@@ -83,6 +84,9 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 
 	err = gatewayv1.AddToScheme(testScheme)
+	Expect(err).NotTo(HaveOccurred())
+
+	err = gatewayv1alpha2.AddToScheme(testScheme)
 	Expect(err).NotTo(HaveOccurred())
 
 	//+kubebuilder:scaffold:scheme
