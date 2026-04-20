@@ -24,6 +24,7 @@ import (
 	"io"
 	"net/http"
 	"sync"
+	"time"
 )
 
 const (
@@ -39,6 +40,11 @@ const (
 	// The OpenAPI spec doesn't expose a port; 8080 matches the WeftServer
 	// reconciler's default bind port.
 	defaultBastionPort = 8080
+
+	// jwtExpiryGracePeriod is subtracted from a JWT's reported expires_in so
+	// we refresh just before the server would reject the cached token. Keeps
+	// in-flight requests from racing expiry and generating spurious 401s.
+	jwtExpiryGracePeriod = 30 * time.Second
 )
 
 // ExternalServer describes a cloud-hosted bastion that aquaduct.dev has
@@ -70,7 +76,7 @@ type APIClient interface {
 	// ListExternalServers returns every cloud-hosted WeftServer the caller's
 	// token has access to. The token is the long-lived access token from the
 	// AquaductTaaS Secret; the implementation exchanges it for a short-lived
-	// JWT via /api/login before calling the bastion endpoints.
+	// JWT via /api/auth/token-exchange before calling the bastion endpoints.
 	ListExternalServers(ctx context.Context, token string) ([]ExternalServer, error)
 
 	// SuspendServer pauses the bastion identified by `id` via
@@ -84,15 +90,28 @@ type APIClient interface {
 // aquaduct.dev REST API described in https://aquaduct.dev/api/openapi.json.
 //
 // Authentication is a two-step exchange: the long-lived access token from the
-// AquaductTaaS Secret is swapped at /api/login for a short-lived JWT, and the
-// JWT is what `/api/bastion` actually accepts. JWTs are cached in memory and
-// re-minted on 401 (so rotation and expiry are self-healing).
+// AquaductTaaS Secret is swapped at /api/auth/token-exchange for a
+// short-lived JWT, and the JWT is what `/api/bastion` actually accepts. JWTs
+// are cached in memory and re-minted on 401 (so rotation and expiry are
+// self-healing).
 type HTTPAPIClient struct {
 	Endpoint string
 	HTTP     *http.Client
 
+	// Now is the clock used to evaluate JWT expiry. Defaults to time.Now.
+	// Tests override this to exercise the expiry-refresh path without sleeping.
+	Now func() time.Time
+
 	mu   sync.Mutex
-	jwts map[string]string // access-token -> cached JWT
+	jwts map[string]cachedJWT // access-token -> cached JWT + expiry
+}
+
+// cachedJWT pairs a JWT with the earliest time at which it should be
+// considered stale. expiresAt is derived from the /auth/token-exchange
+// response's expires_in field minus jwtExpiryGracePeriod.
+type cachedJWT struct {
+	jwt       string
+	expiresAt time.Time
 }
 
 // NewHTTPAPIClient constructs an HTTPAPIClient with sensible defaults. If
@@ -104,8 +123,16 @@ func NewHTTPAPIClient(endpoint string) *HTTPAPIClient {
 	return &HTTPAPIClient{
 		Endpoint: endpoint,
 		HTTP:     http.DefaultClient,
-		jwts:     map[string]string{},
+		Now:      time.Now,
+		jwts:     map[string]cachedJWT{},
 	}
+}
+
+func (c *HTTPAPIClient) now() time.Time {
+	if c.Now != nil {
+		return c.Now()
+	}
+	return time.Now()
 }
 
 // apiBastion mirrors the subset of database.Bastion we consume. Fields we
@@ -118,59 +145,76 @@ type apiBastion struct {
 	Suspended        bool   `json:"suspended"`
 }
 
-// loginResponse matches auth.LoginResponse in the OpenAPI spec.
-type loginResponse struct {
-	Token string `json:"token"`
+// exchangeResponse matches tokens.ExchangeTokenResponse in the server code.
+type exchangeResponse struct {
+	Token     string `json:"token"`
+	ExpiresIn int    `json:"expires_in"`
 }
 
-// login exchanges an access token for a JWT. Per the spec, GET /api/login
-// accepts token auth either as a Bearer header or a body field; we use
-// Bearer so the token never ends up in request logs as a body parameter.
-func (c *HTTPAPIClient) login(ctx context.Context, accessToken string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.Endpoint+apiBasePath+"/login", nil)
+// login exchanges a long-lived aqt_-prefixed access token for a short-lived
+// JWT via POST /api/auth/token-exchange. The /login handler only supports
+// email+password despite what the spec suggests, so this dedicated endpoint
+// is what actually validates API tokens. Returns the JWT and the time at
+// which the caller should treat it as stale (expires_in minus a grace period).
+func (c *HTTPAPIClient) login(ctx context.Context, accessToken string) (string, time.Time, error) {
+	body, err := json.Marshal(map[string]string{"token": accessToken})
 	if err != nil {
-		return "", err
+		return "", time.Time{}, err
 	}
-	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.Endpoint+apiBasePath+"/auth/token-exchange", bytes.NewReader(body))
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return "", err
+		return "", time.Time{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("aquaduct.dev /login returned %d: %s", resp.StatusCode, string(body))
+		respBody, _ := io.ReadAll(resp.Body)
+		return "", time.Time{}, fmt.Errorf("aquaduct.dev /auth/token-exchange returned %d: %s", resp.StatusCode, string(respBody))
 	}
-	var lr loginResponse
-	if err := json.NewDecoder(resp.Body).Decode(&lr); err != nil {
-		return "", fmt.Errorf("decode login response: %w", err)
+	var er exchangeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&er); err != nil {
+		return "", time.Time{}, fmt.Errorf("decode exchange response: %w", err)
 	}
-	if lr.Token == "" {
-		return "", fmt.Errorf("aquaduct.dev /login returned empty token")
+	if er.Token == "" {
+		return "", time.Time{}, fmt.Errorf("aquaduct.dev /auth/token-exchange returned empty token")
 	}
-	return lr.Token, nil
+
+	// A missing / zero / negative expires_in would mean "never expires" — we
+	// instead treat it as "expires immediately" so a misbehaving server can't
+	// leave us holding a stale JWT forever. The retry-on-401 path still
+	// covers outright wrong responses.
+	var expiresAt time.Time
+	if er.ExpiresIn > 0 {
+		expiresAt = c.now().Add(time.Duration(er.ExpiresIn)*time.Second - jwtExpiryGracePeriod)
+	}
+	return er.Token, expiresAt, nil
 }
 
 // getJWT returns a cached JWT for the given access token, minting a new one
-// via login() if there isn't one. The caller must invalidate via clearJWT
-// after a 401 so stale JWTs don't get reused forever.
+// via login() if there isn't one or the cached one is past its expiry. The
+// caller must invalidate via clearJWT after a 401 so stale JWTs don't get
+// reused forever (belt-and-braces in case the server's expires_in lied).
 func (c *HTTPAPIClient) getJWT(ctx context.Context, accessToken string) (string, error) {
 	c.mu.Lock()
-	if jwt, ok := c.jwts[accessToken]; ok {
+	if entry, ok := c.jwts[accessToken]; ok && c.now().Before(entry.expiresAt) {
 		c.mu.Unlock()
-		return jwt, nil
+		return entry.jwt, nil
 	}
 	c.mu.Unlock()
 
-	jwt, err := c.login(ctx, accessToken)
+	jwt, expiresAt, err := c.login(ctx, accessToken)
 	if err != nil {
 		return "", err
 	}
 
 	c.mu.Lock()
-	c.jwts[accessToken] = jwt
+	c.jwts[accessToken] = cachedJWT{jwt: jwt, expiresAt: expiresAt}
 	c.mu.Unlock()
 	return jwt, nil
 }

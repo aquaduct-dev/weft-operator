@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -30,21 +31,21 @@ import (
 	"aquaduct.dev/weft-operator/internal/controller/aquaducttaas"
 )
 
-// These tests pin the HTTPAPIClient to the contract published in
-// https://aquaduct.dev/api/openapi.json:
-//   GET   /api/login               Exchange access token (Bearer) for a JWT
-//   GET   /api/bastion             List bastions (JWT Bearer)
-//   PATCH /api/bastion/{id}        Update a bastion (JWT Bearer)
+// These tests pin the HTTPAPIClient to the aquaduct.dev API contract:
+//   POST  /api/auth/token-exchange    Exchange access token (body) for a JWT
+//   GET   /api/bastion                List bastions (JWT Bearer)
+//   PATCH /api/bastion/{id}           Update a bastion (JWT Bearer)
 //
-// The long-lived token stored in the AquaductTaaS Secret is NOT accepted by
-// /api/bastion directly — per the spec's securityDefinitions the bastion
-// endpoints require a JWT. HTTPAPIClient performs the exchange and caches
-// the JWT in memory, re-minting it on a 401 so rotation heals automatically.
+// The long-lived aqt_-prefixed token is NOT accepted by /api/bastion
+// directly — the bastion endpoints require a JWT. HTTPAPIClient performs the
+// exchange and caches the JWT in memory, re-minting it on a 401 so rotation
+// heals automatically.
 
 // mockAquaductServer builds an httptest.Server that models the two-hop flow:
-// /api/login accepts the access token as Bearer and returns a JWT, and the
-// bastion endpoints only accept that JWT. Fields capture what the last
-// request looked like so assertions can check headers and paths.
+// /api/auth/token-exchange accepts the access token in a JSON body and
+// returns a JWT, and the bastion endpoints only accept that JWT. Fields
+// capture what the last request looked like so assertions can check headers
+// and paths.
 type mockAquaductServer struct {
 	*httptest.Server
 
@@ -65,14 +66,24 @@ func newMockAquaductServer(accessToken, jwt string) *mockAquaductServer {
 	m := &mockAquaductServer{accessToken: accessToken, jwt: jwt}
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/api/login", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/auth/token-exchange", func(w http.ResponseWriter, r *http.Request) {
 		m.loginCount.Add(1)
-		auth := r.Header.Get("Authorization")
-		if auth != "Bearer "+m.accessToken {
+		if r.Method != http.MethodPost {
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		var body struct {
+			Token string `json:"token"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, `{"error":"bad body"}`, http.StatusBadRequest)
+			return
+		}
+		if body.Token != m.accessToken {
 			http.Error(w, `{"error":"invalid access token"}`, http.StatusUnauthorized)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]string{"token": m.jwt})
+		_ = json.NewEncoder(w).Encode(map[string]any{"token": m.jwt, "expires_in": 3600})
 	})
 
 	mux.HandleFunc("/api/bastion", func(w http.ResponseWriter, r *http.Request) {
@@ -107,7 +118,7 @@ func newMockAquaductServer(accessToken, jwt string) *mockAquaductServer {
 }
 
 var _ = Describe("HTTPAPIClient", func() {
-	It("Exchanges the access token at /api/login, then lists bastions with the JWT", func(ctx context.Context) {
+	It("Exchanges the access token at /api/auth/token-exchange, then lists bastions with the JWT", func(ctx context.Context) {
 		m := newMockAquaductServer("access-token", "signed.jwt.here")
 		defer m.Close()
 
@@ -120,14 +131,38 @@ var _ = Describe("HTTPAPIClient", func() {
 		Expect(m.loginCount.Load()).To(Equal(int32(1)))
 		Expect(m.listCount.Load()).To(Equal(int32(1)))
 
-		By("A second call reuses the cached JWT — no extra /login round trip")
+		By("A second call reuses the cached JWT — no extra exchange round trip")
 		_, err = client.ListExternalServers(ctx, "access-token")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(m.loginCount.Load()).To(Equal(int32(1)))
 		Expect(m.listCount.Load()).To(Equal(int32(2)))
 	})
 
-	It("Falls back to a fresh /login on 401, so expired/rotated JWTs self-heal", func(ctx context.Context) {
+	It("Re-exchanges proactively when expires_in has elapsed — no 401 round-trip needed", func(ctx context.Context) {
+		m := newMockAquaductServer("access-token", "jwt-1")
+		defer m.Close()
+
+		client := aquaducttaas.NewHTTPAPIClient(m.URL)
+		nowVal := time.Unix(1700000000, 0)
+		client.Now = func() time.Time { return nowVal }
+
+		_, err := client.ListExternalServers(ctx, "access-token")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(m.loginCount.Load()).To(Equal(int32(1)))
+		Expect(m.listCount.Load()).To(Equal(int32(1)))
+
+		By("Advancing past expires_in=3600 minus grace invalidates the cache")
+		nowVal = nowVal.Add(3600 * time.Second)
+
+		_, err = client.ListExternalServers(ctx, "access-token")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(m.loginCount.Load()).To(Equal(int32(2)),
+			"client must have re-exchanged without waiting for a 401")
+		Expect(m.listCount.Load()).To(Equal(int32(2)),
+			"the list call should have succeeded on the first try with the fresh JWT")
+	})
+
+	It("Re-exchanges the access token on 401, so expired/rotated JWTs self-heal", func(ctx context.Context) {
 		m := newMockAquaductServer("access-token", "jwt-v2")
 		defer m.Close()
 
@@ -146,10 +181,10 @@ var _ = Describe("HTTPAPIClient", func() {
 		_, err = client.ListExternalServers(ctx, "access-token")
 		Expect(err).NotTo(HaveOccurred(), "client should re-login and retry once on 401")
 		Expect(m.loginCount.Load()).To(Equal(loginsBefore+1),
-			"exactly one extra /login after the 401, not repeated retries")
+			"exactly one extra exchange after the 401, not repeated retries")
 	})
 
-	It("Returns an error if /login itself fails", func(ctx context.Context) {
+	It("Returns an error if token-exchange itself fails", func(ctx context.Context) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":"invalid or expired token"}`, http.StatusUnauthorized)
 		}))
@@ -157,7 +192,7 @@ var _ = Describe("HTTPAPIClient", func() {
 
 		_, err := aquaducttaas.NewHTTPAPIClient(srv.URL).ListExternalServers(ctx, "bogus")
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("/login"))
+		Expect(err.Error()).To(ContainSubstring("/auth/token-exchange"))
 		Expect(err.Error()).To(ContainSubstring("401"))
 	})
 
