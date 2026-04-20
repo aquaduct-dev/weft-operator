@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 )
 
 const (
@@ -67,23 +68,31 @@ type ExternalServer struct {
 // fake for development without a real aquaduct.dev account.
 type APIClient interface {
 	// ListExternalServers returns every cloud-hosted WeftServer the caller's
-	// token has access to. The token is passed per-call so a single client
-	// instance can serve multiple AquaductTaaS objects.
+	// token has access to. The token is the long-lived access token from the
+	// AquaductTaaS Secret; the implementation exchanges it for a short-lived
+	// JWT via /api/login before calling the bastion endpoints.
 	ListExternalServers(ctx context.Context, token string) ([]ExternalServer, error)
 
 	// SuspendServer pauses the bastion identified by `id` via
-	// PATCH /api/bastion/{id} with `{"suspended": true}`. Called when the
-	// AquaductTaaS that owns it is being deleted so aquaduct.dev can stop
-	// billing / tear down network paths. Must be idempotent so a retry after
-	// a partial failure re-suspends already-suspended servers without error.
+	// PATCH /api/bastion/{id} with `{"suspended": true}`. Must be idempotent
+	// so a retry after a partial failure re-suspends already-suspended
+	// servers without error.
 	SuspendServer(ctx context.Context, token, id string) error
 }
 
 // HTTPAPIClient is the default production APIClient. It talks to the
 // aquaduct.dev REST API described in https://aquaduct.dev/api/openapi.json.
+//
+// Authentication is a two-step exchange: the long-lived access token from the
+// AquaductTaaS Secret is swapped at /api/login for a short-lived JWT, and the
+// JWT is what `/api/bastion` actually accepts. JWTs are cached in memory and
+// re-minted on 401 (so rotation and expiry are self-healing).
 type HTTPAPIClient struct {
 	Endpoint string
 	HTTP     *http.Client
+
+	mu   sync.Mutex
+	jwts map[string]string // access-token -> cached JWT
 }
 
 // NewHTTPAPIClient constructs an HTTPAPIClient with sensible defaults. If
@@ -92,7 +101,11 @@ func NewHTTPAPIClient(endpoint string) *HTTPAPIClient {
 	if endpoint == "" {
 		endpoint = DefaultAPIEndpoint
 	}
-	return &HTTPAPIClient{Endpoint: endpoint, HTTP: http.DefaultClient}
+	return &HTTPAPIClient{
+		Endpoint: endpoint,
+		HTTP:     http.DefaultClient,
+		jwts:     map[string]string{},
+	}
 }
 
 // apiBastion mirrors the subset of database.Bastion we consume. Fields we
@@ -105,15 +118,113 @@ type apiBastion struct {
 	Suspended        bool   `json:"suspended"`
 }
 
-func (c *HTTPAPIClient) ListExternalServers(ctx context.Context, token string) ([]ExternalServer, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.Endpoint+apiBasePath+"/bastion", nil)
+// loginResponse matches auth.LoginResponse in the OpenAPI spec.
+type loginResponse struct {
+	Token string `json:"token"`
+}
+
+// login exchanges an access token for a JWT. Per the spec, GET /api/login
+// accepts token auth either as a Bearer header or a body field; we use
+// Bearer so the token never ends up in request logs as a body parameter.
+func (c *HTTPAPIClient) login(ctx context.Context, accessToken string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.Endpoint+apiBasePath+"/login", nil)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("aquaduct.dev /login returned %d: %s", resp.StatusCode, string(body))
+	}
+	var lr loginResponse
+	if err := json.NewDecoder(resp.Body).Decode(&lr); err != nil {
+		return "", fmt.Errorf("decode login response: %w", err)
+	}
+	if lr.Token == "" {
+		return "", fmt.Errorf("aquaduct.dev /login returned empty token")
+	}
+	return lr.Token, nil
+}
+
+// getJWT returns a cached JWT for the given access token, minting a new one
+// via login() if there isn't one. The caller must invalidate via clearJWT
+// after a 401 so stale JWTs don't get reused forever.
+func (c *HTTPAPIClient) getJWT(ctx context.Context, accessToken string) (string, error) {
+	c.mu.Lock()
+	if jwt, ok := c.jwts[accessToken]; ok {
+		c.mu.Unlock()
+		return jwt, nil
+	}
+	c.mu.Unlock()
+
+	jwt, err := c.login(ctx, accessToken)
+	if err != nil {
+		return "", err
+	}
+
+	c.mu.Lock()
+	c.jwts[accessToken] = jwt
+	c.mu.Unlock()
+	return jwt, nil
+}
+
+func (c *HTTPAPIClient) clearJWT(accessToken string) {
+	c.mu.Lock()
+	delete(c.jwts, accessToken)
+	c.mu.Unlock()
+}
+
+// authedRequest runs `build(jwt)` against a fresh JWT; if the response comes
+// back 401 the cached JWT is dropped and the call is retried once (so tokens
+// rotated on the server heal without human intervention). The returned
+// response is the one the caller should Read/Close.
+func (c *HTTPAPIClient) authedRequest(
+	ctx context.Context,
+	accessToken string,
+	build func(jwt string) (*http.Request, error),
+) (*http.Response, error) {
+	for attempt := 0; attempt < 2; attempt++ {
+		jwt, err := c.getJWT(ctx, accessToken)
+		if err != nil {
+			return nil, err
+		}
+		req, err := build(jwt)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := c.HTTP.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode == http.StatusUnauthorized && attempt == 0 {
+			resp.Body.Close()
+			c.clearJWT(accessToken)
+			continue
+		}
+		return resp, nil
+	}
+	// Unreachable: the loop either returns or re-iterates; two iterations
+	// are the max.
+	return nil, fmt.Errorf("unreachable")
+}
+
+func (c *HTTPAPIClient) ListExternalServers(ctx context.Context, token string) ([]ExternalServer, error) {
+	resp, err := c.authedRequest(ctx, token, func(jwt string) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.Endpoint+apiBasePath+"/bastion", nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+jwt)
+		req.Header.Set("Accept", "application/json")
+		return req, nil
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -146,14 +257,15 @@ func (c *HTTPAPIClient) SuspendServer(ctx context.Context, token, id string) err
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, c.Endpoint+apiBasePath+"/bastion/"+id, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.HTTP.Do(req)
+	resp, err := c.authedRequest(ctx, token, func(jwt string) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPatch, c.Endpoint+apiBasePath+"/bastion/"+id, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+jwt)
+		req.Header.Set("Content-Type", "application/json")
+		return req, nil
+	})
 	if err != nil {
 		return err
 	}

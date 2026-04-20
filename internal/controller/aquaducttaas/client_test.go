@@ -22,6 +22,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -30,66 +31,156 @@ import (
 )
 
 // These tests pin the HTTPAPIClient to the contract published in
-// https://aquaduct.dev/api/openapi.json — specifically the `bastions` tag:
-//   GET   /api/bastion                       List bastions
-//   PATCH /api/bastion/{bastion-id}          Update a bastion (suspend/resume)
-// Both require Bearer auth. The List response is a JSON array of
-// database.Bastion objects.
+// https://aquaduct.dev/api/openapi.json:
+//   GET   /api/login               Exchange access token (Bearer) for a JWT
+//   GET   /api/bastion             List bastions (JWT Bearer)
+//   PATCH /api/bastion/{id}        Update a bastion (JWT Bearer)
+//
+// The long-lived token stored in the AquaductTaaS Secret is NOT accepted by
+// /api/bastion directly — per the spec's securityDefinitions the bastion
+// endpoints require a JWT. HTTPAPIClient performs the exchange and caches
+// the JWT in memory, re-minting it on a 401 so rotation heals automatically.
 
-var _ = Describe("HTTPAPIClient", func() {
-	It("Lists bastions from GET /api/bastion and maps them to ExternalServers", func(ctx context.Context) {
-		var gotAuth, gotPath, gotAccept string
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			gotAuth = r.Header.Get("Authorization")
-			gotPath = r.URL.Path
-			gotAccept = r.Header.Get("Accept")
-			w.Header().Set("Content-Type", "application/json")
-			// Shape matches database.Bastion in the OpenAPI spec.
-			_, _ = w.Write([]byte(`[
-				{"id":"uuid-1","name":"home","ip":"1.2.3.4","connection_secret":"sec-home","suspended":false},
-				{"id":"uuid-2","name":"backup","ip":"5.6.7.8","connection_secret":"sec-backup","suspended":true}
-			]`))
-		}))
-		defer srv.Close()
+// mockAquaductServer builds an httptest.Server that models the two-hop flow:
+// /api/login accepts the access token as Bearer and returns a JWT, and the
+// bastion endpoints only accept that JWT. Fields capture what the last
+// request looked like so assertions can check headers and paths.
+type mockAquaductServer struct {
+	*httptest.Server
 
-		client := aquaducttaas.NewHTTPAPIClient(srv.URL)
-		servers, err := client.ListExternalServers(ctx, "mytoken")
-		Expect(err).NotTo(HaveOccurred())
-		Expect(gotAuth).To(Equal("Bearer mytoken"))
-		Expect(gotPath).To(Equal("/api/bastion"))
-		Expect(gotAccept).To(Equal("application/json"))
+	accessToken string // the long-lived token the client is expected to present
+	jwt         string // the JWT we mint in response
 
-		Expect(servers).To(HaveLen(2))
-		Expect(servers[0].ID).To(Equal("uuid-1"))
-		Expect(servers[0].Name).To(Equal("home"))
-		Expect(servers[0].ConnectionString).To(Equal("weft://sec-home@1.2.3.4:8080"))
-		Expect(servers[0].Suspended).To(BeFalse())
+	listCount    atomic.Int32
+	loginCount   atomic.Int32
+	suspendCount atomic.Int32
 
-		Expect(servers[1].ID).To(Equal("uuid-2"))
-		Expect(servers[1].Suspended).To(BeTrue(),
-			"suspended bastions must still be surfaced — the reconciler decides what to do with them")
+	// listHandler / suspendHandler let individual tests override behavior
+	// once auth has been validated. If nil, default success responses apply.
+	listHandler    http.HandlerFunc
+	suspendHandler http.HandlerFunc
+}
+
+func newMockAquaductServer(accessToken, jwt string) *mockAquaductServer {
+	m := &mockAquaductServer{accessToken: accessToken, jwt: jwt}
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/api/login", func(w http.ResponseWriter, r *http.Request) {
+		m.loginCount.Add(1)
+		auth := r.Header.Get("Authorization")
+		if auth != "Bearer "+m.accessToken {
+			http.Error(w, `{"error":"invalid access token"}`, http.StatusUnauthorized)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"token": m.jwt})
 	})
 
-	It("Returns an error on non-2xx list responses", func(ctx context.Context) {
+	mux.HandleFunc("/api/bastion", func(w http.ResponseWriter, r *http.Request) {
+		m.listCount.Add(1)
+		if r.Header.Get("Authorization") != "Bearer "+m.jwt {
+			http.Error(w, `{"error":"invalid jwt"}`, http.StatusUnauthorized)
+			return
+		}
+		if m.listHandler != nil {
+			m.listHandler(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`[{"id":"uuid-1","name":"home","ip":"1.2.3.4","connection_secret":"sec","suspended":false}]`))
+	})
+
+	mux.HandleFunc("/api/bastion/", func(w http.ResponseWriter, r *http.Request) {
+		m.suspendCount.Add(1)
+		if r.Header.Get("Authorization") != "Bearer "+m.jwt {
+			http.Error(w, `{"error":"invalid jwt"}`, http.StatusUnauthorized)
+			return
+		}
+		if m.suspendHandler != nil {
+			m.suspendHandler(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"suspended":true}`))
+	})
+
+	m.Server = httptest.NewServer(mux)
+	return m
+}
+
+var _ = Describe("HTTPAPIClient", func() {
+	It("Exchanges the access token at /api/login, then lists bastions with the JWT", func(ctx context.Context) {
+		m := newMockAquaductServer("access-token", "signed.jwt.here")
+		defer m.Close()
+
+		client := aquaducttaas.NewHTTPAPIClient(m.URL)
+		servers, err := client.ListExternalServers(ctx, "access-token")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(servers).To(HaveLen(1))
+		Expect(servers[0].ID).To(Equal("uuid-1"))
+		Expect(servers[0].ConnectionString).To(Equal("weft://sec@1.2.3.4:8080"))
+		Expect(m.loginCount.Load()).To(Equal(int32(1)))
+		Expect(m.listCount.Load()).To(Equal(int32(1)))
+
+		By("A second call reuses the cached JWT — no extra /login round trip")
+		_, err = client.ListExternalServers(ctx, "access-token")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(m.loginCount.Load()).To(Equal(int32(1)))
+		Expect(m.listCount.Load()).To(Equal(int32(2)))
+	})
+
+	It("Falls back to a fresh /login on 401, so expired/rotated JWTs self-heal", func(ctx context.Context) {
+		m := newMockAquaductServer("access-token", "jwt-v2")
+		defer m.Close()
+
+		client := aquaducttaas.NewHTTPAPIClient(m.URL)
+
+		By("Priming the cache with an expired JWT that the server will reject")
+		// We reach into the client via a pair of real calls: first seed the
+		// cache, then rotate what the server considers valid, then list
+		// again and confirm the client re-logged-in.
+		_, err := client.ListExternalServers(ctx, "access-token")
+		Expect(err).NotTo(HaveOccurred())
+		loginsBefore := m.loginCount.Load()
+
+		m.jwt = "jwt-v3" // server now rejects the cached JWT
+
+		_, err = client.ListExternalServers(ctx, "access-token")
+		Expect(err).NotTo(HaveOccurred(), "client should re-login and retry once on 401")
+		Expect(m.loginCount.Load()).To(Equal(loginsBefore+1),
+			"exactly one extra /login after the 401, not repeated retries")
+	})
+
+	It("Returns an error if /login itself fails", func(ctx context.Context) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+			http.Error(w, `{"error":"invalid or expired token"}`, http.StatusUnauthorized)
 		}))
 		defer srv.Close()
 
-		client := aquaducttaas.NewHTTPAPIClient(srv.URL)
-		_, err := client.ListExternalServers(ctx, "mytoken")
+		_, err := aquaducttaas.NewHTTPAPIClient(srv.URL).ListExternalServers(ctx, "bogus")
 		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("/login"))
 		Expect(err.Error()).To(ContainSubstring("401"))
 	})
 
-	It("Returns an error on invalid JSON", func(ctx context.Context) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			_, _ = w.Write([]byte(`not json`))
-		}))
-		defer srv.Close()
+	It("Returns a non-2xx list response as an error", func(ctx context.Context) {
+		m := newMockAquaductServer("tok", "jwt")
+		m.listHandler = func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, `{"error":"server down"}`, http.StatusInternalServerError)
+		}
+		defer m.Close()
 
-		client := aquaducttaas.NewHTTPAPIClient(srv.URL)
-		_, err := client.ListExternalServers(ctx, "mytoken")
+		_, err := aquaducttaas.NewHTTPAPIClient(m.URL).ListExternalServers(ctx, "tok")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("500"))
+	})
+
+	It("Returns an error on invalid JSON bodies", func(ctx context.Context) {
+		m := newMockAquaductServer("tok", "jwt")
+		m.listHandler = func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`not json`))
+		}
+		defer m.Close()
+
+		_, err := aquaducttaas.NewHTTPAPIClient(m.URL).ListExternalServers(ctx, "tok")
 		Expect(err).To(HaveOccurred())
 	})
 
@@ -98,37 +189,37 @@ var _ = Describe("HTTPAPIClient", func() {
 		Expect(client.Endpoint).To(Equal(aquaducttaas.DefaultAPIEndpoint))
 	})
 
-	It("Suspends via PATCH /api/bastion/{id} with {\"suspended\":true}", func(ctx context.Context) {
-		var gotMethod, gotPath, gotAuth, gotCT string
+	It("Suspends via PATCH /api/bastion/{id} with {\"suspended\":true} and JWT auth", func(ctx context.Context) {
+		var gotMethod, gotPath, gotCT string
 		var gotBody map[string]any
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		m := newMockAquaductServer("tok", "jwt")
+		m.suspendHandler = func(w http.ResponseWriter, r *http.Request) {
 			gotMethod = r.Method
 			gotPath = r.URL.Path
-			gotAuth = r.Header.Get("Authorization")
 			gotCT = r.Header.Get("Content-Type")
-			body, _ := io.ReadAll(r.Body)
-			_ = json.Unmarshal(body, &gotBody)
+			b, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(b, &gotBody)
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"id":"uuid-1","suspended":true}`))
-		}))
-		defer srv.Close()
+			_, _ = w.Write([]byte(`{"suspended":true}`))
+		}
+		defer m.Close()
 
-		err := aquaducttaas.NewHTTPAPIClient(srv.URL).SuspendServer(ctx, "tok", "uuid-1")
+		err := aquaducttaas.NewHTTPAPIClient(m.URL).SuspendServer(ctx, "tok", "uuid-1")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(gotMethod).To(Equal(http.MethodPatch))
 		Expect(gotPath).To(Equal("/api/bastion/uuid-1"))
-		Expect(gotAuth).To(Equal("Bearer tok"))
 		Expect(gotCT).To(Equal("application/json"))
 		Expect(gotBody).To(HaveKeyWithValue("suspended", true))
 	})
 
 	It("Returns an error when SuspendServer gets a non-2xx response", func(ctx context.Context) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		m := newMockAquaductServer("tok", "jwt")
+		m.suspendHandler = func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
-		}))
-		defer srv.Close()
+		}
+		defer m.Close()
 
-		err := aquaducttaas.NewHTTPAPIClient(srv.URL).SuspendServer(ctx, "tok", "uuid-missing")
+		err := aquaducttaas.NewHTTPAPIClient(m.URL).SuspendServer(ctx, "tok", "uuid-missing")
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("404"))
 		Expect(err.Error()).To(ContainSubstring("uuid-missing"))
