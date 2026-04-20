@@ -37,9 +37,10 @@ const (
 
 	// defaultBastionPort is appended when we build the weft:// connection
 	// string from the IP + connection_secret fields aquaduct.dev returns.
-	// The OpenAPI spec doesn't expose a port; 8080 matches the WeftServer
-	// reconciler's default bind port.
-	defaultBastionPort = 8080
+	// The OpenAPI spec doesn't expose a port; 9092 matches the fallback in
+	// the WeftServer reconciler's status path (reconciler.go's
+	// updateWeftServerStatus, where a missing port is defaulted to "9092").
+	defaultBastionPort = 9092
 
 	// jwtExpiryGracePeriod is subtracted from a JWT's reported expires_in so
 	// we refresh just before the server would reject the cached token. Keeps

@@ -127,7 +127,7 @@ var _ = Describe("HTTPAPIClient", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(servers).To(HaveLen(1))
 		Expect(servers[0].ID).To(Equal("uuid-1"))
-		Expect(servers[0].ConnectionString).To(Equal("weft://sec@1.2.3.4:8080"))
+		Expect(servers[0].ConnectionString).To(Equal("weft://sec@1.2.3.4:9092"))
 		Expect(m.loginCount.Load()).To(Equal(int32(1)))
 		Expect(m.listCount.Load()).To(Equal(int32(1)))
 

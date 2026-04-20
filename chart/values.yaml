@@ -45,11 +45,23 @@ tolerations: []
 
 affinity: {}
 
+# Gateway API CRDs (gateway.networking.k8s.io). A pre-install/pre-upgrade
+# hook Job runs `kubectl apply --server-side` against the vendored bundle
+# at files/gateway-api-crds.yaml. The Job runs on every release lifecycle
+# event — install and each upgrade — so schema updates land when the chart
+# is bumped. The CRDs themselves are not owned by this release (Helm never
+# sees them), so `helm uninstall` leaves them in place for any other
+# Gateway API consumers in the cluster.
+gatewayApiCRDs:
+  # Set to false if the cluster already manages Gateway API CRDs out of
+  # band (e.g. installed by a platform team or another controller).
+  install: true
+  # kubectl image used by the install Job. Must contain kubectl on PATH.
+  image: docker.io/bitnami/kubectl:1.31
+  imagePullPolicy: IfNotPresent
+
 # GatewayClass managed by this chart. Users point their Gateway objects at
 # .Values.gatewayClass.name to route traffic through the weft operator.
-# The Gateway API CRDs themselves are NOT installed by this chart — make
-# sure the cluster already has gateway.networking.k8s.io installed (e.g.
-# via `kubectl apply -f` of the upstream CRD bundle) before enabling this.
 gatewayClass:
   # If false, no GatewayClass is created — users must define their own and
   # set its controllerName to "weft.aquaduct.dev/gateway-controller".

@@ -5,7 +5,7 @@ go_test(
     srcs = ["suite_test.go"],
     data = [
         "//api/v1alpha1:generated.crds",
-        "//chart/templates/crds:gateway_crds",
+        "//chart/files:gateway-api-crds.yaml",
     ],
     deps = [
         "//api/v1alpha1",

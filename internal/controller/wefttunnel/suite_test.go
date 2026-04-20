@@ -64,7 +64,7 @@ var _ = BeforeSuite(func() {
 
 	By("bootstrapping test environment")
 	testSrcDir := os.Getenv("TEST_SRCDIR")
-	chartCrdDirectory := filepath.Join(testSrcDir, "_main", "chart", "templates", "crds")
+	chartCrdDirectory := filepath.Join(testSrcDir, "_main", "chart", "files")
 	genCrdDirectory := filepath.Join(testSrcDir, "_main", "api", "v1alpha1", "crds")
 
 	testEnv = &envtest.Environment{

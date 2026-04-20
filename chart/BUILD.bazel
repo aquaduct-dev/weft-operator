@@ -5,7 +5,9 @@ helm_chart(
     chart = "Chart.yaml",
     crds = [
         "//api/v1alpha1:generated.crds",
-        # "//chart/templates/crds:gateway_crds", # Removed to avoid conflicts if CRDs exist
+    ],
+    files = [
+        "//chart/files:gateway-api-crds.yaml",
     ],
     images = ["//cmd:weft_operator_image_push"],
     registry_url = "oci://ghcr.io/aquaduct-dev/charts",
@@ -16,6 +18,7 @@ helm_chart(
         "//chart/templates:serviceaccount.yaml",
         "//chart/templates:_helpers.tpl",
         "//chart/templates:gatewayclass.yaml",
+        "//chart/templates:gateway-api-crds.yaml",
     ],
     upgrade_opts = [
         "--namespace=weft-system",
