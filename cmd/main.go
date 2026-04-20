@@ -39,6 +39,7 @@ import (
 	"aquaduct.dev/weft-operator/internal/controller/weftserver"
 	"aquaduct.dev/weft-operator/internal/controller/wefttunnel"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 	//+kubebuilder:scaffold:imports
 )
 
@@ -52,6 +53,9 @@ func init() {
 
 	utilruntime.Must(weftv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(gatewayv1.AddToScheme(scheme))
+	// v1alpha2 is needed because the weftgateway reconciler watches TCPRoute,
+	// TLSRoute, and UDPRoute — Gateway API's experimental channel kinds.
+	utilruntime.Must(gatewayv1alpha2.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
 }
 

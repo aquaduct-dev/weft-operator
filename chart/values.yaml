@@ -45,5 +45,19 @@ tolerations: []
 
 affinity: {}
 
-# Gateway API CRDs are not included by default to avoid conflicts
-installGatewayCRDs: false
+# GatewayClass managed by this chart. Users point their Gateway objects at
+# .Values.gatewayClass.name to route traffic through the weft operator.
+# The Gateway API CRDs themselves are NOT installed by this chart — make
+# sure the cluster already has gateway.networking.k8s.io installed (e.g.
+# via `kubectl apply -f` of the upstream CRD bundle) before enabling this.
+gatewayClass:
+  # If false, no GatewayClass is created — users must define their own and
+  # set its controllerName to "weft.aquaduct.dev/gateway-controller".
+  create: true
+  name: weft-gateway-class
+  # parametersRef optionally points the GatewayClass at a WeftGateway CR
+  # holding weft-specific config (e.g. targetServers). Leave unset if you
+  # don't need per-class config; the reconciler tolerates a missing ref.
+  parametersRef: {}
+  #  name: my-weft-gateway
+  #  namespace: default

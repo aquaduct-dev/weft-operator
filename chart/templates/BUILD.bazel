@@ -11,6 +11,7 @@ exports_files([
     "rolebinding.yaml",
     "serviceaccount.yaml",
     "_helpers.tpl",
+    "gatewayclass.yaml",
 ])
 
 filegroup(
