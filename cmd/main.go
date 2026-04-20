@@ -117,8 +117,9 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&aquaducttaas.AquaductTaaSReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		APIClient: aquaducttaas.NewHTTPAPIClient(""),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "AquaductTaaS")
 		os.Exit(1)

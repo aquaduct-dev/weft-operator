@@ -148,19 +148,30 @@ spec:
 
 ### `AquaductTaaS`
 
-This CRD stores information about the user's online `aquaduct.dev` account.  Specifically, it stores the user's long-lived access token.  Then, by connecting to `api.aquaduct.dev`, it is intended to reconcile the following information into the cluster (not yet implemented):
+This CRD connects the cluster to the user's online `aquaduct.dev` account via a long-lived access token stored in a Secret. The reconciler calls the aquaduct.dev REST API (see https://aquaduct.dev/api/openapi.json) to:
 
- - Any external (i.e. hosted in the cloud) `WeftServer`s and their tokens
+ - Mirror every cloud-hosted bastion into the cluster as a `WeftServer` with `Location: External`
+ - Suspend those bastions via `PATCH /api/bastion/{id}` when the `AquaductTaaS` CR is deleted (a finalizer blocks deletion until suspend succeeds)
 
 #### Example
 
 ```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: aquaduct-token
+  namespace: default
+stringData:
+  token: "your-long-lived-access-token"
+---
 apiVersion: weft.aquaduct.dev/v1alpha1
 kind: AquaductTaaS
 metadata:
   name: example-aquaduct-taas
   namespace: default
 spec:
-  accessToken: "your-long-lived-access-token"
+  accessTokenSecretRef:
+    name: aquaduct-token
+    key: token
 ```
 

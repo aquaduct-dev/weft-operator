@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 filegroup(
     name = "srcs",
@@ -8,14 +8,61 @@ filegroup(
 
 go_library(
     name = "aquaducttaas",
-    srcs = ["reconciler.go"],
+    srcs = [
+        "client.go",
+        "reconciler.go",
+    ],
     importpath = "aquaduct.dev/weft-operator/internal/controller/aquaducttaas",
     visibility = ["//visibility:public"],
     deps = [
         "//api/v1alpha1",
+        "@io_k8s_api//core/v1:core",
+        "@io_k8s_apimachinery//pkg/api/errors",
+        "@io_k8s_apimachinery//pkg/api/meta",
+        "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
         "@io_k8s_apimachinery//pkg/runtime",
+        "@io_k8s_apimachinery//pkg/types",
         "@io_k8s_sigs_controller_runtime//:controller-runtime",
         "@io_k8s_sigs_controller_runtime//pkg/client",
+        "@io_k8s_sigs_controller_runtime//pkg/controller/controllerutil",
         "@io_k8s_sigs_controller_runtime//pkg/log",
+    ],
+)
+
+go_test(
+    name = "aquaducttaas_test",
+    srcs = [
+        "client_test.go",
+        "reconciler_test.go",
+        "suite_test.go",
+    ],
+    data = [
+        "//api/v1alpha1:generated.crds",
+        "//chart/templates/crds:gateway_crds",
+        "//tools/envtest:etcd",
+        "//tools/envtest:kube-apiserver",
+        "//tools/envtest:kubectl",
+    ],
+    env = {
+        "KUBEBUILDER_ASSETS": "../../../$(rootpath //tools/envtest:etcd)/..",
+    },
+    deps = [
+        ":aquaducttaas",
+        "//api/v1alpha1",
+        "@com_github_onsi_ginkgo_v2//:ginkgo",
+        "@com_github_onsi_gomega//:gomega",
+        "@io_k8s_api//core/v1:core",
+        "@io_k8s_apimachinery//pkg/api/errors",
+        "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
+        "@io_k8s_apimachinery//pkg/runtime",
+        "@io_k8s_apimachinery//pkg/types",
+        "@io_k8s_client_go//kubernetes/scheme",
+        "@io_k8s_client_go//rest",
+        "@io_k8s_sigs_controller_runtime//:controller-runtime",
+        "@io_k8s_sigs_controller_runtime//pkg/client",
+        "@io_k8s_sigs_controller_runtime//pkg/envtest",
+        "@io_k8s_sigs_controller_runtime//pkg/log",
+        "@io_k8s_sigs_controller_runtime//pkg/log/zap",
+        "@io_k8s_sigs_controller_runtime//pkg/metrics/server",
     ],
 )
