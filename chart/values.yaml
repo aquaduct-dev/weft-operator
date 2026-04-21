@@ -57,7 +57,11 @@ gatewayApiCRDs:
   # band (e.g. installed by a platform team or another controller).
   install: true
   # kubectl image used by the install Job. Must contain kubectl on PATH.
-  image: docker.io/bitnami/kubectl:1.31
+  # Rancher publishes per-kubectl-version tags (`rancher/kubectl:vX.Y.Z`)
+  # under docker.io; we use that instead of bitnami/kubectl because Bitnami
+  # moved their registry to sha256-only tags so semver tags like `1.31`
+  # no longer resolve.
+  image: docker.io/rancher/kubectl:v1.31.0
   imagePullPolicy: IfNotPresent
 
 # GatewayClass managed by this chart. Users point their Gateway objects at
