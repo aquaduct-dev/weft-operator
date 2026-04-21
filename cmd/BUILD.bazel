@@ -10,6 +10,7 @@ go_library(
     deps = [
         "//api/v1alpha1",
         "//internal/controller/aquaducttaas",
+        "//internal/controller/dnsrecord",
         "//internal/controller/weftgateway",
         "//internal/controller/weftserver",
         "//internal/controller/wefttunnel",

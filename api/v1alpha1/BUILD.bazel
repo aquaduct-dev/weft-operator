@@ -6,6 +6,7 @@ controller_gen(
     srcs = [
         ":api_types",
         "//internal/controller/aquaducttaas:srcs",
+        "//internal/controller/dnsrecord:srcs",
         "//internal/controller/weftgateway:srcs",
         "//internal/controller/weftserver:srcs",
         "//internal/controller/wefttunnel:srcs",
@@ -27,6 +28,7 @@ go_library(
     name = "v1alpha1",
     srcs = [
         "aquaducttaas_types.go",
+        "dnsrecord_types.go",
         "groupversion_info.go",
         "weftgateway_types.go",
         "weftserver_types.go",

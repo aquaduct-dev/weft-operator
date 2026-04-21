@@ -7,16 +7,13 @@ filegroup(
 )
 
 go_library(
-    name = "aquaducttaas",
-    srcs = [
-        "client.go",
-        "domain.go",
-        "reconciler.go",
-    ],
-    importpath = "aquaduct.dev/weft-operator/internal/controller/aquaducttaas",
+    name = "dnsrecord",
+    srcs = ["reconciler.go"],
+    importpath = "aquaduct.dev/weft-operator/internal/controller/dnsrecord",
     visibility = ["//visibility:public"],
     deps = [
         "//api/v1alpha1",
+        "//internal/controller/aquaducttaas",
         "@io_k8s_api//core/v1:core",
         "@io_k8s_apimachinery//pkg/api/errors",
         "@io_k8s_apimachinery//pkg/api/meta",
@@ -31,15 +28,13 @@ go_library(
 )
 
 go_test(
-    name = "aquaducttaas_test",
+    name = "dnsrecord_test",
     srcs = [
-        "client_test.go",
         "reconciler_test.go",
         "suite_test.go",
     ],
     data = [
         "//api/v1alpha1:generated.crds",
-        "//chart/files:gateway-api-crds.yaml",
         "//tools/envtest:etcd",
         "//tools/envtest:kube-apiserver",
         "//tools/envtest:kubectl",
@@ -48,8 +43,9 @@ go_test(
         "KUBEBUILDER_ASSETS": "../../../$(rootpath //tools/envtest:etcd)/..",
     },
     deps = [
-        ":aquaducttaas",
+        ":dnsrecord",
         "//api/v1alpha1",
+        "//internal/controller/aquaducttaas",
         "@com_github_onsi_ginkgo_v2//:ginkgo",
         "@com_github_onsi_gomega//:gomega",
         "@io_k8s_api//core/v1:core",

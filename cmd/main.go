@@ -35,6 +35,7 @@ import (
 
 	weftv1alpha1 "aquaduct.dev/weft-operator/api/v1alpha1"
 	"aquaduct.dev/weft-operator/internal/controller/aquaducttaas"
+	"aquaduct.dev/weft-operator/internal/controller/dnsrecord"
 	"aquaduct.dev/weft-operator/internal/controller/weftgateway"
 	"aquaduct.dev/weft-operator/internal/controller/weftserver"
 	"aquaduct.dev/weft-operator/internal/controller/wefttunnel"
@@ -120,12 +121,21 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "WeftTunnel")
 		os.Exit(1)
 	}
+	taasAPIClient := aquaducttaas.NewHTTPAPIClient("")
 	if err := (&aquaducttaas.AquaductTaaSReconciler{
 		Client:    mgr.GetClient(),
 		Scheme:    mgr.GetScheme(),
-		APIClient: aquaducttaas.NewHTTPAPIClient(""),
+		APIClient: taasAPIClient,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "AquaductTaaS")
+		os.Exit(1)
+	}
+	if err := (&dnsrecord.DNSRecordReconciler{
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		APIClient: taasAPIClient,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "DNSRecord")
 		os.Exit(1)
 	}
 	if err := (&weftgateway.WeftGatewayReconciler{
