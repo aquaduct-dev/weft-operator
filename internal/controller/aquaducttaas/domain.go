@@ -25,6 +25,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 )
 
 // ErrDomainNotFound is returned by DomainAPIClient.GetDomain when
@@ -48,39 +49,61 @@ var ErrDomainForeign = errors.New("aquaduct.dev: domain is owned by a different 
 // server may return additional fields (timestamps, metadata) that this
 // decoder silently ignores.
 type Domain struct {
-	// ID is the server-assigned identifier. Stored on DNSRecord status so
-	// operators can correlate cluster records to server-side entries.
+	// ID is the server-assigned identifier as a decimal string. The wire
+	// format is int64; converting to string at this boundary keeps
+	// DNSRecord status fields stringly-typed and avoids leaking the
+	// numeric form to operators reading kubectl describe output.
 	ID string
 	// Name is the fully-qualified domain. Always equal to the path
 	// parameter for calls that include a {domain} segment; included on
 	// the struct so a future List endpoint can return populated Name.
 	Name string
+	// BastionIDs are the bastions the server has bound this domain to.
+	// On PUT/PATCH this is the set the server actually applied (which
+	// may equal what the caller asked for, or — when the caller omitted
+	// the field — the full fan-out set the server picked).
+	BastionIDs []string
+	// IPs are the resolved A-record IPs for those bastions, returned by
+	// the server as a debugging convenience. Empty when no bastions are
+	// associated; not authoritative DNS state (use LookupDomain for
+	// what the world actually sees).
+	IPs []string
 }
 
 // DomainAPIClient is a distinct interface from APIClient because the
 // DNSRecord reconciler is an independent consumer — it should be
 // fakeable without having to stub out bastion methods.
+//
+// The bastionIDs parameter on Put/Patch follows the server's tri-state
+// PATCH convention:
+//   - nil          -> field omitted; server preserves existing value (PATCH)
+//                     or applies "fan out to all caller's bastions" (PUT).
+//   - &[]          -> explicit empty list; server clears all bastion bindings
+//                     and tears down the cloudflare records.
+//   - &[ids...]    -> explicit list; server applies exactly these bastions.
 type DomainAPIClient interface {
 	// GetDomain returns the record for `name` or ErrDomainNotFound on 404.
 	// Any other error (network, 5xx, auth) is surfaced to the caller so
 	// the reconciler can retry and surface a meaningful status.
 	GetDomain(ctx context.Context, token, name string) (*Domain, error)
 
-	// PutDomain registers `name`. Idempotent — the server treats a PUT
-	// on an existing record as an update. The caller is allowed to PUT
-	// over a record they didn't originally create ("clobber"), but is
-	// expected to DeleteDomain on teardown regardless.
-	PutDomain(ctx context.Context, token, name string) (*Domain, error)
+	// PutDomain registers `name` with the requested bastion association.
+	// Idempotent — the server treats a PUT on an existing record as an
+	// update. The caller is allowed to PUT over a record they didn't
+	// originally create ("clobber"), but is expected to DeleteDomain on
+	// teardown regardless.
+	PutDomain(ctx context.Context, token, name string, bastionIDs *[]string) (*Domain, error)
 
-	// PatchDomain asserts our write access over an existing `name`. The
-	// request body is minimal on purpose — we don't know our own user_id
-	// locally, so we let the server's auth layer decide: a 2xx means we
-	// own (or just took over) the record; a 401/403/409 means someone
-	// else holds it, surfaced as ErrDomainForeign so the reconciler can
-	// set a ForeignOwned condition. A 404 between GET and PATCH is a
-	// race — the record was deleted under us — surfaced as
-	// ErrDomainNotFound so the caller can retry the create path.
-	PatchDomain(ctx context.Context, token, name string) (*Domain, error)
+	// PatchDomain asserts our write access over an existing `name` and
+	// optionally updates the bastion association. With bastionIDs nil,
+	// the request is a "confirm I can write" probe (no field changes);
+	// the server's auth layer decides: a 2xx means we own (or just took
+	// over) the record; a 401/403/409 means someone else holds it,
+	// surfaced as ErrDomainForeign so the reconciler can set a
+	// ForeignOwned condition. A 404 between GET and PATCH is a race —
+	// the record was deleted under us — surfaced as ErrDomainNotFound
+	// so the caller can retry the create path.
+	PatchDomain(ctx context.Context, token, name string, bastionIDs *[]string) (*Domain, error)
 
 	// DeleteDomain removes `name`. A 404 is treated as success (the
 	// record is already gone, which is the goal). All other errors are
@@ -93,11 +116,37 @@ type DomainAPIClient interface {
 	LookupDomain(ctx context.Context, token, name string) ([]string, error)
 }
 
-// apiDomain is the wire type for /domain endpoints.
+// apiDomain is the response wire type for /domain endpoints. Mirrors
+// database.Domain on the server side as of PR #3 — id is int64, and
+// bastion_ids/ips are populated after the server applies cloudflare
+// state.
 type apiDomain struct {
-	ID         string `json:"id"`
-	DomainName string `json:"domain_name"`
-	UserID     string `json:"user_id,omitempty"`
+	ID         int64    `json:"id"`
+	DomainName string   `json:"domain_name"`
+	UserID     string   `json:"user_id,omitempty"`
+	BastionIDs []string `json:"bastion_ids"`
+	IPs        []string `json:"ips,omitempty"`
+}
+
+// apiDomainPayload is the request wire type for PUT/PATCH. Distinct from
+// apiDomain because BastionIDs needs pointer semantics to encode the
+// nil-vs-empty distinction on PATCH (preserve existing vs explicitly
+// clear). domain_name and bastion_ids are the only writable fields.
+type apiDomainPayload struct {
+	DomainName string    `json:"domain_name,omitempty"`
+	BastionIDs *[]string `json:"bastion_ids,omitempty"`
+}
+
+// toDomain converts the wire format to the operator-facing Domain. ID
+// is int64 on the wire; we render it as a decimal string so it can drop
+// straight into status.domainID (a string field) without further coercion.
+func (a *apiDomain) toDomain() *Domain {
+	return &Domain{
+		ID:         strconv.FormatInt(a.ID, 10),
+		Name:       a.DomainName,
+		BastionIDs: a.BastionIDs,
+		IPs:        a.IPs,
+	}
 }
 
 // ipLookupResponse is the wire type for GET /domain/lookup.
@@ -134,11 +183,11 @@ func (c *HTTPAPIClient) GetDomain(ctx context.Context, token, name string) (*Dom
 	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
 		return nil, fmt.Errorf("decode domain response: %w", err)
 	}
-	return &Domain{ID: d.ID, Name: d.DomainName}, nil
+	return d.toDomain(), nil
 }
 
-func (c *HTTPAPIClient) PutDomain(ctx context.Context, token, name string) (*Domain, error) {
-	body, err := json.Marshal(apiDomain{DomainName: name})
+func (c *HTTPAPIClient) PutDomain(ctx context.Context, token, name string, bastionIDs *[]string) (*Domain, error) {
+	body, err := json.Marshal(apiDomainPayload{DomainName: name, BastionIDs: bastionIDs})
 	if err != nil {
 		return nil, err
 	}
@@ -172,16 +221,17 @@ func (c *HTTPAPIClient) PutDomain(ctx context.Context, token, name string) (*Dom
 	if d.DomainName == "" {
 		d.DomainName = name
 	}
-	return &Domain{ID: d.ID, Name: d.DomainName}, nil
+	return d.toDomain(), nil
 }
 
-func (c *HTTPAPIClient) PatchDomain(ctx context.Context, token, name string) (*Domain, error) {
-	// The server's PATCH accepts {id, domain_name, user_id}. We send
-	// only domain_name: we don't know our own user_id, and the id is
-	// the path parameter. Effectively a "confirm I can write" probe —
-	// the server resolves the caller's identity from the JWT and
-	// either accepts or rejects based on current ownership.
-	body, err := json.Marshal(apiDomain{DomainName: name})
+func (c *HTTPAPIClient) PatchDomain(ctx context.Context, token, name string, bastionIDs *[]string) (*Domain, error) {
+	// With bastionIDs nil, the body carries only domain_name — that's
+	// effectively a "confirm I can write" probe, since domain_name on
+	// the path is also the primary key. The server resolves the
+	// caller's identity from the JWT and either accepts or rejects
+	// based on current ownership; with bastionIDs non-nil it also
+	// re-applies the cloudflare records to match.
+	body, err := json.Marshal(apiDomainPayload{DomainName: name, BastionIDs: bastionIDs})
 	if err != nil {
 		return nil, err
 	}
@@ -223,7 +273,7 @@ func (c *HTTPAPIClient) PatchDomain(ctx context.Context, token, name string) (*D
 	if d.DomainName == "" {
 		d.DomainName = name
 	}
-	return &Domain{ID: d.ID, Name: d.DomainName}, nil
+	return d.toDomain(), nil
 }
 
 func (c *HTTPAPIClient) DeleteDomain(ctx context.Context, token, name string) error {
@@ -242,6 +292,16 @@ func (c *HTTPAPIClient) DeleteDomain(ctx context.Context, token, name string) er
 
 	if resp.StatusCode == http.StatusNotFound {
 		return nil
+	}
+	// 401/403/409 on DELETE means the record is foreign-owned. The
+	// finalizer's job is "leave the world clean of our claims" — and
+	// if the record was never ours to begin with (externally-managed
+	// case), that's already satisfied. Surface it as ErrDomainForeign
+	// so the caller can distinguish from a transient error and skip
+	// to finalizer removal.
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusConflict {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("%w (status %d): %s", ErrDomainForeign, resp.StatusCode, string(respBody))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(resp.Body)

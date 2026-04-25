@@ -44,17 +44,18 @@ import (
 type mockDomainClient struct {
 	mu       sync.Mutex
 	GetFn    func(ctx context.Context, token, name string) (*aquaducttaas.Domain, error)
-	PutFn    func(ctx context.Context, token, name string) (*aquaducttaas.Domain, error)
-	PatchFn  func(ctx context.Context, token, name string) (*aquaducttaas.Domain, error)
+	PutFn    func(ctx context.Context, token, name string, bastionIDs *[]string) (*aquaducttaas.Domain, error)
+	PatchFn  func(ctx context.Context, token, name string, bastionIDs *[]string) (*aquaducttaas.Domain, error)
 	DeleteFn func(ctx context.Context, token, name string) error
 	LookupFn func(ctx context.Context, token, name string) ([]string, error)
 
-	LastToken  string
-	GetCalls   int
-	PutCalls   int
-	PatchCalls int
-	DelCalls   int
-	LookCalls  int
+	LastToken      string
+	LastBastionIDs *[]string
+	GetCalls       int
+	PutCalls       int
+	PatchCalls     int
+	DelCalls       int
+	LookCalls      int
 }
 
 func (m *mockDomainClient) GetDomain(ctx context.Context, token, name string) (*aquaducttaas.Domain, error) {
@@ -68,30 +69,68 @@ func (m *mockDomainClient) GetDomain(ctx context.Context, token, name string) (*
 	return m.GetFn(ctx, token, name)
 }
 
-func (m *mockDomainClient) PutDomain(ctx context.Context, token, name string) (*aquaducttaas.Domain, error) {
+func (m *mockDomainClient) PutDomain(ctx context.Context, token, name string, bastionIDs *[]string) (*aquaducttaas.Domain, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.LastToken = token
+	m.LastBastionIDs = bastionIDs
 	m.PutCalls++
 	if m.PutFn == nil {
-		return &aquaducttaas.Domain{ID: "id-" + name, Name: name}, nil
+		// Default: server accepts and "applies" whatever the caller
+		// asked for. With bastionIDs nil, return a placeholder fan-out
+		// of one bastion so tests that don't care about specific IDs
+		// still get populated AppliedBastionIDs/IPs.
+		applied := []string{"default-bastion"}
+		ips := []string{"10.0.0.1"}
+		if bastionIDs != nil {
+			applied = *bastionIDs
+			ips = ipsForBastions(applied)
+		}
+		return &aquaducttaas.Domain{
+			ID:         "id-" + name,
+			Name:       name,
+			BastionIDs: applied,
+			IPs:        ips,
+		}, nil
 	}
-	return m.PutFn(ctx, token, name)
+	return m.PutFn(ctx, token, name, bastionIDs)
 }
 
-func (m *mockDomainClient) PatchDomain(ctx context.Context, token, name string) (*aquaducttaas.Domain, error) {
+func (m *mockDomainClient) PatchDomain(ctx context.Context, token, name string, bastionIDs *[]string) (*aquaducttaas.Domain, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.LastToken = token
+	m.LastBastionIDs = bastionIDs
 	m.PatchCalls++
 	if m.PatchFn == nil {
-		// Default: PATCH succeeds and returns a record with the name's
-		// ID. This mirrors the real server accepting our claim when no
-		// foreign-owner conflict exists, so tests that don't care about
-		// PATCH semantics don't need to stub it out.
-		return &aquaducttaas.Domain{ID: "id-" + name, Name: name}, nil
+		// Default: PATCH succeeds and "applies" the requested bastions.
+		applied := []string{"default-bastion"}
+		ips := []string{"10.0.0.1"}
+		if bastionIDs != nil {
+			applied = *bastionIDs
+			ips = ipsForBastions(applied)
+		}
+		return &aquaducttaas.Domain{
+			ID:         "id-" + name,
+			Name:       name,
+			BastionIDs: applied,
+			IPs:        ips,
+		}, nil
 	}
-	return m.PatchFn(ctx, token, name)
+	return m.PatchFn(ctx, token, name, bastionIDs)
+}
+
+// ipsForBastions returns a deterministic test IP per bastion ID so that
+// mock responses and seeded BastionInfo lists agree. Real server-side
+// resolution looks up each bastion's IP from the cluster's bastion
+// inventory; for tests we just hash the ID into the last octet.
+func ipsForBastions(ids []string) []string {
+	out := make([]string, 0, len(ids))
+	for i, id := range ids {
+		_ = id
+		out = append(out, fmt.Sprintf("10.0.0.%d", 10+i))
+	}
+	return out
 }
 
 func (m *mockDomainClient) DeleteDomain(ctx context.Context, token, name string) error {
@@ -122,13 +161,13 @@ func (m *mockDomainClient) setGet(fn func(ctx context.Context, token, name strin
 	m.GetFn = fn
 }
 
-func (m *mockDomainClient) setPut(fn func(ctx context.Context, token, name string) (*aquaducttaas.Domain, error)) {
+func (m *mockDomainClient) setPut(fn func(ctx context.Context, token, name string, bastionIDs *[]string) (*aquaducttaas.Domain, error)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.PutFn = fn
 }
 
-func (m *mockDomainClient) setPatch(fn func(ctx context.Context, token, name string) (*aquaducttaas.Domain, error)) {
+func (m *mockDomainClient) setPatch(fn func(ctx context.Context, token, name string, bastionIDs *[]string) (*aquaducttaas.Domain, error)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.PatchFn = fn
@@ -210,6 +249,11 @@ var _ = Describe("DNSRecord Controller", func() {
 		Expect(k8sClient.Create(ctx, sec)).To(Succeed())
 	}
 
+	// createTaaS creates an AquaductTaaS and seeds its status with one
+	// non-suspended bastion ("default-bastion" / 10.0.0.1) so the
+	// DNSRecord reconciler can derive expectedIPs without depending on
+	// a real AquaductTaaSReconciler running in envtest. Tests that need
+	// a different bastion topology call seedTaaSBastions afterward.
 	createTaaS := func(ctx context.Context, key string) *weftv1alpha1.AquaductTaaS {
 		t := &weftv1alpha1.AquaductTaaS{
 			ObjectMeta: metav1.ObjectMeta{Name: taasName, Namespace: "default"},
@@ -221,8 +265,27 @@ var _ = Describe("DNSRecord Controller", func() {
 			},
 		}
 		Expect(k8sClient.Create(ctx, t)).To(Succeed())
+		now := metav1.Now()
+		t.Status.LastSyncTime = &now
+		t.Status.Bastions = []weftv1alpha1.BastionInfo{
+			{ID: "default-bastion", Name: "default", IP: "10.0.0.1"},
+		}
+		Expect(k8sClient.Status().Update(ctx, t)).To(Succeed())
 		return t
 	}
+
+	// seedTaaSBastions overrides the default bastion list on an
+	// existing AquaductTaaS. Used by tests that need a specific
+	// topology (multiple bastions, suspended, etc.).
+	seedTaaSBastions := func(ctx context.Context, bastions []weftv1alpha1.BastionInfo) {
+		t := &weftv1alpha1.AquaductTaaS{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: taasName, Namespace: "default"}, t)).To(Succeed())
+		now := metav1.Now()
+		t.Status.LastSyncTime = &now
+		t.Status.Bastions = bastions
+		Expect(k8sClient.Status().Update(ctx, t)).To(Succeed())
+	}
+	_ = seedTaaSBastions // available for tests that need a non-default topology
 
 	createDNSRecord := func(ctx context.Context) *weftv1alpha1.DNSRecord {
 		d := &weftv1alpha1.DNSRecord{
@@ -284,7 +347,7 @@ var _ = Describe("DNSRecord Controller", func() {
 		mock.setGet(func(ctx context.Context, token, name string) (*aquaducttaas.Domain, error) {
 			return &aquaducttaas.Domain{ID: "preexisting-xyz", Name: name}, nil
 		})
-		mock.setPatch(func(ctx context.Context, token, name string) (*aquaducttaas.Domain, error) {
+		mock.setPatch(func(ctx context.Context, token, name string, bastionIDs *[]string) (*aquaducttaas.Domain, error) {
 			// Server accepted the take-over; returns the (now ours) record.
 			return &aquaducttaas.Domain{ID: "preexisting-xyz", Name: name}, nil
 		})
@@ -302,17 +365,24 @@ var _ = Describe("DNSRecord Controller", func() {
 		Expect(findCondition(d.Status.Conditions, "Registered").Status).To(Equal(metav1.ConditionTrue))
 	})
 
-	It("Sets Registered=False with ForeignOwned when PATCH is refused", func(ctx context.Context) {
+	It("Sets Registered=False with ForeignOwned when PATCH is refused AND DNS records are wrong", func(ctx context.Context) {
 		createSecret(ctx, "token", "tok")
 		createTaaS(ctx, "token")
 		mock.setGet(func(ctx context.Context, token, name string) (*aquaducttaas.Domain, error) {
 			return &aquaducttaas.Domain{ID: "someone-elses-id", Name: name}, nil
 		})
-		mock.setPatch(func(ctx context.Context, token, name string) (*aquaducttaas.Domain, error) {
+		mock.setPatch(func(ctx context.Context, token, name string, bastionIDs *[]string) (*aquaducttaas.Domain, error) {
 			// The real HTTP client wraps a 403 as `%w: ...` around
 			// ErrDomainForeign; the reconciler matches on errors.Is, so
 			// returning the sentinel directly is equivalent for tests.
 			return nil, aquaducttaas.ErrDomainForeign
+		})
+		// The foreign owner has the domain pointed at IPs that don't
+		// match our expected bastion (default seed has 10.0.0.1).
+		// That makes this a hard ForeignOwned failure rather than the
+		// ExternallyManaged "happens to be correct" case.
+		mock.setLookup(func(ctx context.Context, token, name string) ([]string, error) {
+			return []string{"203.0.113.99"}, nil
 		})
 		createDNSRecord(ctx)
 
@@ -331,12 +401,47 @@ var _ = Describe("DNSRecord Controller", func() {
 		Expect(cond.Reason).To(Equal("ForeignOwned"))
 		Expect(cond.Message).To(ContainSubstring("different user"))
 
-		// Ready must also reflect the failure — users filtering on
-		// Ready=False should see the foreign-owned status without
-		// needing to look at the component condition.
+		// Ready follows Resolved, which is False (lookup mismatches
+		// expected). The user-visible signal is "DNS isn't pointing
+		// at our bastions" — the deeper "ForeignOwned" reason is in
+		// the Registered condition for operators who care.
 		ready := findCondition(d.Status.Conditions, "Ready")
 		Expect(ready.Status).To(Equal(metav1.ConditionFalse))
-		Expect(ready.Reason).To(Equal("ForeignOwned"))
+		Expect(ready.Reason).To(Equal("Mismatched"))
+	})
+
+	It("Sets Registered=ExternallyManaged but Ready=True when foreign-owned record happens to be correct", func(ctx context.Context) {
+		createSecret(ctx, "token", "tok")
+		createTaaS(ctx, "token")
+		mock.setGet(func(ctx context.Context, token, name string) (*aquaducttaas.Domain, error) {
+			return &aquaducttaas.Domain{ID: "someone-elses-id", Name: name}, nil
+		})
+		mock.setPatch(func(ctx context.Context, token, name string, bastionIDs *[]string) (*aquaducttaas.Domain, error) {
+			return nil, aquaducttaas.ErrDomainForeign
+		})
+		// Lookup returns the same IP as our seeded bastion; the world
+		// is "correct" via external configuration. Reconciliation
+		// should report success even though we don't own the record.
+		mock.setLookup(func(ctx context.Context, token, name string) ([]string, error) {
+			return []string{"10.0.0.1"}, nil
+		})
+		createDNSRecord(ctx)
+
+		res, err := reconcile(ctx, newReconciler())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.RequeueAfter).To(BeNumerically(">", 30*time.Second),
+			"once the world is correct (regardless of ownership), we requeue on the long cadence")
+
+		d := getDNSRecord(ctx)
+		reg := findCondition(d.Status.Conditions, "Registered")
+		Expect(reg.Status).To(Equal(metav1.ConditionFalse))
+		Expect(reg.Reason).To(Equal("ExternallyManaged"))
+		Expect(reg.Message).To(ContainSubstring("match the expected bastion IPs"))
+
+		ready := findCondition(d.Status.Conditions, "Ready")
+		Expect(ready.Status).To(Equal(metav1.ConditionTrue),
+			"DNS records correct => Ready=True even without ownership")
+		Expect(ready.Reason).To(Equal("Ready"))
 	})
 
 	It("Recovers when PATCH races with an external deletion", func(ctx context.Context) {
@@ -354,7 +459,7 @@ var _ = Describe("DNSRecord Controller", func() {
 			}
 			return &aquaducttaas.Domain{ID: "transient-id", Name: name}, nil
 		})
-		mock.setPatch(func(ctx context.Context, token, name string) (*aquaducttaas.Domain, error) {
+		mock.setPatch(func(ctx context.Context, token, name string, bastionIDs *[]string) (*aquaducttaas.Domain, error) {
 			atomic.StoreInt32(&vanished, 1)
 			return nil, aquaducttaas.ErrDomainNotFound
 		})
@@ -372,9 +477,12 @@ var _ = Describe("DNSRecord Controller", func() {
 		Expect(findCondition(d.Status.Conditions, "Registered").Status).To(Equal(metav1.ConditionTrue))
 	})
 
-	It("Sets Resolved=False without blocking Registered=True when DNS returns no records", func(ctx context.Context) {
+	It("Reports Resolved=Mismatched when DNS hasn't propagated yet", func(ctx context.Context) {
 		createSecret(ctx, "token", "tok")
 		createTaaS(ctx, "token")
+		// Lookup returns no IPs — propagation lag is the typical case
+		// just after a fresh PUT. We expect 10.0.0.1 (from the seeded
+		// bastion) but DNS hasn't picked it up yet.
 		mock.setLookup(func(ctx context.Context, token, name string) ([]string, error) {
 			return nil, nil
 		})
@@ -384,10 +492,14 @@ var _ = Describe("DNSRecord Controller", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		d := getDNSRecord(ctx)
+		// Registered=True — the PUT succeeded; ownership is fine.
 		Expect(findCondition(d.Status.Conditions, "Registered").Status).To(Equal(metav1.ConditionTrue))
+		// Resolved=False reason=Mismatched — empty lookup vs non-empty
+		// expected. The new semantics treat "no records" the same way
+		// as "wrong records": both are differences from desired state.
 		res := findCondition(d.Status.Conditions, "Resolved")
 		Expect(res.Status).To(Equal(metav1.ConditionFalse))
-		Expect(res.Reason).To(Equal("NoRecords"))
+		Expect(res.Reason).To(Equal("Mismatched"))
 		Expect(findCondition(d.Status.Conditions, "Ready").Status).To(Equal(metav1.ConditionFalse))
 	})
 
@@ -448,7 +560,7 @@ var _ = Describe("DNSRecord Controller", func() {
 	It("Surfaces RegisterFailed when PUT fails", func(ctx context.Context) {
 		createSecret(ctx, "token", "tok")
 		createTaaS(ctx, "token")
-		mock.setPut(func(ctx context.Context, token, name string) (*aquaducttaas.Domain, error) {
+		mock.setPut(func(ctx context.Context, token, name string, bastionIDs *[]string) (*aquaducttaas.Domain, error) {
 			return nil, errors.New("quota exceeded")
 		})
 		createDNSRecord(ctx)
@@ -478,7 +590,7 @@ var _ = Describe("DNSRecord Controller", func() {
 			return nil, aquaducttaas.ErrDomainNotFound
 		})
 		// Next PUT should re-create it with a fresh ID, proving recovery.
-		mock.setPut(func(ctx context.Context, token, name string) (*aquaducttaas.Domain, error) {
+		mock.setPut(func(ctx context.Context, token, name string, bastionIDs *[]string) (*aquaducttaas.Domain, error) {
 			return &aquaducttaas.Domain{ID: "id-regenerated", Name: name}, nil
 		})
 

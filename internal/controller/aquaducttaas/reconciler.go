@@ -124,9 +124,23 @@ func (r *AquaductTaaSReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	sort.Strings(synced)
+	// Publish the full bastion list on status so downstream reconcilers
+	// (DNSRecord) can compute fan-out / expected-IP decisions without
+	// re-listing /api/bastion themselves.
+	bastions := make([]weftv1alpha1.BastionInfo, 0, len(servers))
+	for _, s := range servers {
+		bastions = append(bastions, weftv1alpha1.BastionInfo{
+			ID:        s.ID,
+			Name:      s.Name,
+			IP:        s.IP,
+			Suspended: s.Suspended,
+		})
+	}
+	sort.Slice(bastions, func(i, j int) bool { return bastions[i].ID < bastions[j].ID })
 	now := metav1.Now()
 	taas.Status.LastSyncTime = &now
 	taas.Status.SyncedServers = synced
+	taas.Status.Bastions = bastions
 	meta.SetStatusCondition(&taas.Status.Conditions, metav1.Condition{
 		Type:    conditionAvailable,
 		Status:  metav1.ConditionTrue,

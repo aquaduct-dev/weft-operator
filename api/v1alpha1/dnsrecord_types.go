@@ -39,6 +39,13 @@ type DNSRecordSpec struct {
 	// whose access token + API endpoint are used to talk to aquaduct.dev.
 	//+kubebuilder:validation:Required
 	AquaductTaaSRef corev1.LocalObjectReference `json:"aquaductTaaSRef"`
+
+	// TargetBastionIDs is the explicit set of bastion IDs the domain
+	// should fan out to. Empty/unset means "fan out to all of the
+	// caller's non-suspended bastions" — matches the server's default
+	// when bastion_ids is omitted in the request body. Set this when
+	// you want a specific subset (e.g. region-pinned routing).
+	TargetBastionIDs []string `json:"targetBastionIDs,omitempty"`
 }
 
 // DNSRecordStatus defines the observed state of a DNSRecord.
@@ -59,9 +66,30 @@ type DNSRecordStatus struct {
 	// when the server reports the record no longer exists.
 	DomainID string `json:"domainID,omitempty"`
 
+	// ExpectedIPs is the set of A-record IPs the reconciler computed for
+	// this domain on the most recent reconcile. It's derived from the
+	// referenced AquaductTaaS's published bastion list, filtered by
+	// spec.targetBastionIDs (or all non-suspended bastions when that's
+	// empty). The Resolved condition is True iff ResolvedIPs equals
+	// this set.
+	ExpectedIPs []string `json:"expectedIPs,omitempty"`
+
 	// ResolvedIPs is the latest A-record lookup result from
 	// GET /domain/lookup. Empty if the lookup hasn't succeeded yet.
 	ResolvedIPs []string `json:"resolvedIPs,omitempty"`
+
+	// AppliedBastionIDs is the bastion set the server reports as bound
+	// to this domain after the most recent successful PUT/PATCH. Useful
+	// for confirming that fan-out matched what spec.targetBastionIDs
+	// (or the server's "all bastions" default) asked for.
+	AppliedBastionIDs []string `json:"appliedBastionIDs,omitempty"`
+
+	// AppliedIPs is the IP set the server says it configured at
+	// cloudflare for this domain. Distinct from ResolvedIPs in that
+	// AppliedIPs reflects the server's intended state immediately after
+	// PUT/PATCH, while ResolvedIPs reflects what actual DNS lookups
+	// return (which lags by propagation time).
+	AppliedIPs []string `json:"appliedIPs,omitempty"`
 
 	// ClobberedPreexisting is true when, on the first reconcile that
 	// observed server-side state, the record already existed. The

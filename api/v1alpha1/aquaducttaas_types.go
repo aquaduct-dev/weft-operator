@@ -38,6 +38,33 @@ type AquaductTaaSSpec struct {
 	APIEndpoint string `json:"apiEndpoint,omitempty"`
 }
 
+// BastionInfo is a snapshot of one of the caller's bastions as
+// reported by aquaduct.dev. The AquaductTaaS reconciler publishes the
+// full list on its status so other reconcilers (notably DNSRecord) can
+// compute IP/bastion-association decisions without re-listing the API.
+type BastionInfo struct {
+	// ID is the opaque bastion identifier. Stable across the bastion's
+	// lifetime; matches what the user references in
+	// DNSRecord.spec.targetBastionIDs and what the server expects in
+	// the bastion_ids field of /domain/{name}.
+	ID string `json:"id"`
+
+	// Name is the human-friendly name. Mirrors the WeftServer object
+	// name for the External-located mirror.
+	Name string `json:"name,omitempty"`
+
+	// IP is the bastion's externally-routable IPv4 address. Used as the
+	// expected A-record value when this bastion is part of a domain's
+	// fan-out set.
+	IP string `json:"ip,omitempty"`
+
+	// Suspended indicates the bastion isn't currently routing traffic.
+	// Suspended bastions are excluded from "fan out to all" defaults
+	// but stay in the list so explicit targetBastionIDs references
+	// don't break.
+	Suspended bool `json:"suspended,omitempty"`
+}
+
 // AquaductTaaSStatus defines the observed state of AquaductTaaS
 type AquaductTaaSStatus struct {
 	// Conditions represents the latest available observations of the AquaductTaaS's current state.
@@ -48,6 +75,13 @@ type AquaductTaaSStatus struct {
 
 	// SyncedServers lists the names of WeftServer objects currently mirrored from aquaduct.dev.
 	SyncedServers []string `json:"syncedServers,omitempty"`
+
+	// Bastions is the full list of bastions the caller's token has
+	// access to, as of the most recent successful sync. Distinct from
+	// SyncedServers in that it includes ID + IP + suspended state, and
+	// is the canonical source of truth for downstream reconcilers
+	// computing fan-out / expected-IP decisions.
+	Bastions []BastionInfo `json:"bastions,omitempty"`
 }
 
 //+kubebuilder:object:root=true

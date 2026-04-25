@@ -3,9 +3,14 @@ load("@rules_helm//helm:defs.bzl", "helm_chart")
 helm_chart(
     name = "weft_operator",
     chart = "Chart.yaml",
-    crds = [
-        "//api/v1alpha1:generated.crds",
-    ],
+    # CRDs go through `templates`, not `crds`. Helm's `crds/` directory
+    # is install-only — `helm upgrade` never refreshes it — which means
+    # schema additions silently get pruned on existing clusters until
+    # someone manually `kubectl apply`s the new CRD. Treating CRDs as
+    # release-managed templates means upgrades update them like any
+    # other resource, at the cost of helm uninstall deleting them
+    # (which we want for dev clusters; long-lived prod tenants should
+    # add helm.sh/resource-policy: keep before relying on the CRDs).
     files = [
         "//chart/files:gateway-api-crds.yaml",
     ],
@@ -19,6 +24,7 @@ helm_chart(
         "//chart/templates:_helpers.tpl",
         "//chart/templates:gatewayclass.yaml",
         "//chart/templates:gateway-api-crds.yaml",
+        "//api/v1alpha1:generated.crds",
     ],
     upgrade_opts = [
         "--namespace=weft-system",

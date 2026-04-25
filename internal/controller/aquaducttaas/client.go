@@ -60,6 +60,12 @@ type ExternalServer struct {
 	// Name is the human-friendly name; used as the WeftServer object name.
 	Name string
 
+	// IP is the bastion's externally-routable IPv4 address. Surfaced
+	// separately from ConnectionString so callers that need just the IP
+	// (e.g. the DNSRecord reconciler computing expected A-record
+	// targets) don't have to parse the connection URL.
+	IP string
+
 	// ConnectionString is weft://<connection_secret>@<ip>:<port>, ready to
 	// drop straight into WeftServer.Spec.ConnectionString.
 	ConnectionString string
@@ -290,6 +296,7 @@ func (c *HTTPAPIClient) ListExternalServers(ctx context.Context, token string) (
 		out = append(out, ExternalServer{
 			ID:               b.ID,
 			Name:             b.Name,
+			IP:               b.IP,
 			ConnectionString: fmt.Sprintf("weft://%s@%s:%d", b.ConnectionSecret, b.IP, defaultBastionPort),
 			Suspended:        b.Suspended,
 		})

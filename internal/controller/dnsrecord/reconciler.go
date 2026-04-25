@@ -127,55 +127,82 @@ func (r *DNSRecordReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 		return ctrl.Result{}, err
 	}
-	_ = taas // currently only used for endpoint/token resolution
 
-	// Query existing server-side state. A 404 means "safe to create"; any
-	// other error is transient (network, 5xx, auth) and gets retried.
-	existing, err := r.APIClient.GetDomain(ctx, token, dr.Spec.DomainName)
+	// Compute the expected A-record set. Source of truth is the
+	// AquaductTaaS's published bastion list, filtered by
+	// spec.targetBastionIDs (or all non-suspended bastions when that's
+	// empty — same default as the server). If the AquaductTaaS hasn't
+	// finished its first sync, we don't know enough to evaluate
+	// Resolved, so we wait.
+	if taas.Status.LastSyncTime == nil {
+		return r.failure(ctx, &dr, conditionRegistered, "WaitingForBastions",
+			fmt.Sprintf("AquaductTaaS %q has not yet published its bastion list", taas.Name))
+	}
+	expectedIPs, targetBastionIDs, missing := selectBastions(taas.Status.Bastions, dr.Spec.TargetBastionIDs)
+	if len(missing) > 0 {
+		return r.failure(ctx, &dr, conditionRegistered, "UnknownBastion",
+			fmt.Sprintf("spec.targetBastionIDs references unknown bastion(s): %v", missing))
+	}
+	dr.Status.ExpectedIPs = expectedIPs
+
+	// Body field for PUT/PATCH. With spec.targetBastionIDs unset (and
+	// thus targetBastionIDs == nil), we send no bastion_ids field —
+	// server falls through to "fan out to all". With it explicitly set
+	// (even to []), we send the field and the server applies exactly
+	// that set. This matches the server's tri-state PATCH semantics.
+	var bastionIDsForBody *[]string
+	if dr.Spec.TargetBastionIDs != nil {
+		ids := append([]string(nil), targetBastionIDs...)
+		bastionIDsForBody = &ids
+	}
+
+	// PUT/PATCH and surface the outcome on `Registered`. Mid-loop we
+	// also stash patchForeign so the post-lookup logic can rewrite the
+	// reason to "ExternallyManaged" if the world is otherwise correct.
+	registeredStatus := metav1.ConditionTrue
+	registeredReason := "Registered"
+	registeredMessage := ""
+	patchForeign := false
+
+	_, getErr := r.APIClient.GetDomain(ctx, token, dr.Spec.DomainName)
 	switch {
-	case errors.Is(err, aquaducttaas.ErrDomainNotFound):
-		// Not there — create it. This also handles the recovery case
-		// where our status claimed we had a record but the server lost
-		// it (manual deletion, DB wipe, etc.): the PUT re-establishes
-		// the desired state and the status stays internally consistent
-		// because we rewrite DomainID below.
-		created, err := r.APIClient.PutDomain(ctx, token, dr.Spec.DomainName)
+	case errors.Is(getErr, aquaducttaas.ErrDomainNotFound):
+		created, err := r.APIClient.PutDomain(ctx, token, dr.Spec.DomainName, bastionIDsForBody)
 		if err != nil {
 			logger.Error(err, "failed to register domain", "domain", dr.Spec.DomainName)
 			return r.failure(ctx, &dr, conditionRegistered, "RegisterFailed",
 				fmt.Sprintf("PUT /domain/%s: %s", dr.Spec.DomainName, err))
 		}
 		dr.Status.DomainID = created.ID
+		dr.Status.AppliedBastionIDs = created.BastionIDs
+		dr.Status.AppliedIPs = created.IPs
 		dr.Status.ClobberedPreexisting = false
+		registeredMessage = fmt.Sprintf("Domain %q registered (id=%s, bastions=%d)",
+			dr.Spec.DomainName, created.ID, len(created.BastionIDs))
 		logger.Info("Registered new domain on aquaduct.dev",
-			"domain", dr.Spec.DomainName, "id", created.ID)
-	case err != nil:
-		// Transient API error. Preserve any previously-recorded
-		// DomainID so a flapping API doesn't churn status.
-		logger.Error(err, "failed to query domain", "domain", dr.Spec.DomainName)
+			"domain", dr.Spec.DomainName, "id", created.ID,
+			"bastions", created.BastionIDs)
+	case getErr != nil:
+		logger.Error(getErr, "failed to query domain", "domain", dr.Spec.DomainName)
 		return r.failure(ctx, &dr, conditionRegistered, "APIError",
-			fmt.Sprintf("GET /domain/%s: %s", dr.Spec.DomainName, err))
+			fmt.Sprintf("GET /domain/%s: %s", dr.Spec.DomainName, getErr))
 	default:
-		// Record exists — assert our write access via PATCH. If the
-		// server accepts, we own it (possibly just took it over); if
-		// the server refuses with 401/403/409, the record belongs to
-		// someone else and we surface a ForeignOwned condition instead
-		// of falsely claiming Registered=True.
-		//
-		// We PATCH on every reconcile (not just the first time we see
-		// an existing record) so ownership stays periodically verified
-		// and a server-side reassignment surfaces within one resync.
-		updated, patchErr := r.APIClient.PatchDomain(ctx, token, dr.Spec.DomainName)
+		updated, patchErr := r.APIClient.PatchDomain(ctx, token, dr.Spec.DomainName, bastionIDsForBody)
 		switch {
 		case errors.Is(patchErr, aquaducttaas.ErrDomainForeign):
-			logger.Error(patchErr, "domain is owned by a different user",
+			// Don't return early — let the lookup run so we can decide
+			// between "ForeignOwned" (records also wrong) and
+			// "ExternallyManaged" (records happen to be correct). The
+			// post-lookup branch flips `Resolved` and the
+			// `Registered.reason` accordingly.
+			logger.Info("PATCH refused as foreign-owned; will check whether DNS is otherwise correct",
 				"domain", dr.Spec.DomainName)
-			return r.failure(ctx, &dr, conditionRegistered, "ForeignOwned",
-				fmt.Sprintf("PATCH /domain/%s refused — record belongs to a different user: %s",
-					dr.Spec.DomainName, patchErr))
+			patchForeign = true
+			registeredStatus = metav1.ConditionFalse
+			registeredReason = "ForeignOwned"
+			registeredMessage = fmt.Sprintf("PATCH /domain/%s refused — record belongs to a different user",
+				dr.Spec.DomainName)
 		case errors.Is(patchErr, aquaducttaas.ErrDomainNotFound):
-			// Race: record was deleted between our GET and PATCH.
-			// Requeue immediately so the next loop hits the PUT path.
 			logger.Info("Record vanished between GET and PATCH, retrying",
 				"domain", dr.Spec.DomainName)
 			return ctrl.Result{Requeue: true}, nil
@@ -183,86 +210,100 @@ func (r *DNSRecordReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			logger.Error(patchErr, "failed to patch domain", "domain", dr.Spec.DomainName)
 			return r.failure(ctx, &dr, conditionRegistered, "APIError",
 				fmt.Sprintf("PATCH /domain/%s: %s", dr.Spec.DomainName, patchErr))
+		default:
+			if dr.Status.DomainID == "" {
+				dr.Status.ClobberedPreexisting = true
+				logger.Info("Took over pre-existing domain registration",
+					"domain", dr.Spec.DomainName, "id", updated.ID)
+			}
+			dr.Status.DomainID = updated.ID
+			dr.Status.AppliedBastionIDs = updated.BastionIDs
+			dr.Status.AppliedIPs = updated.IPs
+			registeredMessage = fmt.Sprintf("Domain %q is registered (id=%s, bastions=%d)",
+				dr.Spec.DomainName, updated.ID, len(updated.BastionIDs))
 		}
-		// If this is the first reconcile that observed the record, we
-		// took ownership of something pre-existing. Flag it so operators
-		// can distinguish "we created this" from "we inherited this".
-		// Subsequent reconciles preserve the flag — a clobber in history
-		// is a clobber forever, since the finalizer's DeleteDomain will
-		// still unregister regardless of origin.
-		if dr.Status.DomainID == "" {
-			dr.Status.ClobberedPreexisting = true
-			logger.Info("Took over pre-existing domain registration",
-				"domain", dr.Spec.DomainName, "id", existing.ID)
+	}
+
+	// Lookup runs regardless of register/patch outcome. Resolved is
+	// driven by ExpectedIPs vs ResolvedIPs equality — that's the
+	// "domain records are correct" check.
+	resolvedStatus, resolvedReason, resolvedMessage := metav1.ConditionFalse, "Unknown", ""
+	ips, lookupErr := r.APIClient.LookupDomain(ctx, token, dr.Spec.DomainName)
+	if lookupErr != nil {
+		logger.Error(lookupErr, "domain lookup failed", "domain", dr.Spec.DomainName)
+		resolvedReason = "LookupFailed"
+		resolvedMessage = fmt.Sprintf("GET /domain/lookup?domain=%s: %s", dr.Spec.DomainName, lookupErr)
+	} else {
+		sort.Strings(ips)
+		dr.Status.ResolvedIPs = ips
+		switch {
+		case len(expectedIPs) == 0:
+			// No bastions to fan to → there are no expected A records.
+			// The world is "correct" iff there also aren't any (the
+			// domain points nowhere). Useful as a transient state but
+			// rarely useful as an end state — surface a distinct reason.
+			if len(ips) == 0 {
+				resolvedStatus = metav1.ConditionTrue
+				resolvedReason = "NoTargets"
+				resolvedMessage = "no bastions to fan to and no A records present"
+			} else {
+				resolvedReason = "UnexpectedRecords"
+				resolvedMessage = fmt.Sprintf("expected no A records, got %d", len(ips))
+			}
+		case stringSlicesEqual(ips, expectedIPs):
+			resolvedStatus = metav1.ConditionTrue
+			resolvedReason = "Resolved"
+			resolvedMessage = fmt.Sprintf("%d A record(s) match expected bastion IPs", len(ips))
+		default:
+			resolvedReason = "Mismatched"
+			resolvedMessage = fmt.Sprintf("expected %v, got %v", expectedIPs, ips)
 		}
-		dr.Status.DomainID = updated.ID
+	}
+
+	// If PATCH was refused as foreign-owned but the records are
+	// already correct, that's the "externally managed" case — Ready
+	// follows Resolved (=True), and Registered carries an
+	// informational reason rather than a hard failure. The DELETE
+	// finalizer will still run on teardown and the server's auth
+	// layer will decide whether to honor it.
+	if patchForeign && resolvedStatus == metav1.ConditionTrue {
+		registeredReason = "ExternallyManaged"
+		registeredMessage = fmt.Sprintf("Domain %q is registered to a different user, but DNS records match the expected bastion IPs", dr.Spec.DomainName)
 	}
 
 	meta.SetStatusCondition(&dr.Status.Conditions, metav1.Condition{
 		Type:               conditionRegistered,
-		Status:             metav1.ConditionTrue,
-		Reason:             "Registered",
-		Message:            fmt.Sprintf("Domain %q is registered on aquaduct.dev (id=%s)", dr.Spec.DomainName, dr.Status.DomainID),
+		Status:             registeredStatus,
+		Reason:             registeredReason,
+		Message:            registeredMessage,
+		ObservedGeneration: dr.Generation,
+	})
+	meta.SetStatusCondition(&dr.Status.Conditions, metav1.Condition{
+		Type:               conditionResolved,
+		Status:             resolvedStatus,
+		Reason:             resolvedReason,
+		Message:            resolvedMessage,
 		ObservedGeneration: dr.Generation,
 	})
 
-	// DNS lookup is best-effort: a registered domain with no resolving
-	// A records is still partially-healthy (Registered=True) and the
-	// lookup may succeed on a later reconcile without any action. So a
-	// lookup failure does NOT short-circuit the status write — we just
-	// mark Resolved=False and keep going.
-	ips, lookupErr := r.APIClient.LookupDomain(ctx, token, dr.Spec.DomainName)
-	if lookupErr != nil {
-		logger.Error(lookupErr, "domain lookup failed", "domain", dr.Spec.DomainName)
-		meta.SetStatusCondition(&dr.Status.Conditions, metav1.Condition{
-			Type:               conditionResolved,
-			Status:             metav1.ConditionFalse,
-			Reason:             "LookupFailed",
-			Message:            fmt.Sprintf("GET /domain/lookup?domain=%s: %s", dr.Spec.DomainName, lookupErr),
-			ObservedGeneration: dr.Generation,
-		})
-	} else {
-		sort.Strings(ips)
-		dr.Status.ResolvedIPs = ips
-		if len(ips) == 0 {
-			meta.SetStatusCondition(&dr.Status.Conditions, metav1.Condition{
-				Type:               conditionResolved,
-				Status:             metav1.ConditionFalse,
-				Reason:             "NoRecords",
-				Message:            "aquaduct.dev lookup returned no A records yet",
-				ObservedGeneration: dr.Generation,
-			})
-		} else {
-			meta.SetStatusCondition(&dr.Status.Conditions, metav1.Condition{
-				Type:               conditionResolved,
-				Status:             metav1.ConditionTrue,
-				Reason:             "Resolved",
-				Message:            fmt.Sprintf("%d A record(s) returned by aquaduct.dev", len(ips)),
-				ObservedGeneration: dr.Generation,
-			})
-		}
+	// Ready follows Resolved alone — the user's framing was "indicate
+	// success if the domain records are correct", regardless of who
+	// owns them. Registered is informational.
+	readyStatus := metav1.ConditionFalse
+	readyReason := resolvedReason
+	readyMessage := resolvedMessage
+	if resolvedStatus == metav1.ConditionTrue {
+		readyStatus = metav1.ConditionTrue
+		readyReason = "Ready"
+		readyMessage = "domain records match expected bastion IPs"
 	}
-
-	// Ready is the AND of the component conditions. Users who just want
-	// a single signal should watch this one.
-	if meta.IsStatusConditionTrue(dr.Status.Conditions, conditionRegistered) &&
-		meta.IsStatusConditionTrue(dr.Status.Conditions, conditionResolved) {
-		meta.SetStatusCondition(&dr.Status.Conditions, metav1.Condition{
-			Type:               conditionReady,
-			Status:             metav1.ConditionTrue,
-			Reason:             "Ready",
-			Message:            "domain is registered and resolves",
-			ObservedGeneration: dr.Generation,
-		})
-	} else {
-		meta.SetStatusCondition(&dr.Status.Conditions, metav1.Condition{
-			Type:               conditionReady,
-			Status:             metav1.ConditionFalse,
-			Reason:             "NotReady",
-			Message:            "one of Registered / Resolved is not True; see component conditions",
-			ObservedGeneration: dr.Generation,
-		})
-	}
+	meta.SetStatusCondition(&dr.Status.Conditions, metav1.Condition{
+		Type:               conditionReady,
+		Status:             readyStatus,
+		Reason:             readyReason,
+		Message:            readyMessage,
+		ObservedGeneration: dr.Generation,
+	})
 
 	now := metav1.Now()
 	dr.Status.LastSyncTime = &now
@@ -270,13 +311,72 @@ func (r *DNSRecordReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if err := r.Status().Update(ctx, &dr); err != nil {
 		return ctrl.Result{}, err
 	}
-	// If the lookup failed we want a faster retry — the record might
-	// resolve moments from now once DNS propagates. Registered but
-	// unresolved is the common "just created" state.
-	if lookupErr != nil {
+	if lookupErr != nil || resolvedStatus != metav1.ConditionTrue {
+		// Record exists but the world isn't yet correct: short retry
+		// while DNS propagates / cloudflare diffs apply / external
+		// owner releases the domain.
 		return ctrl.Result{RequeueAfter: errorRetry}, nil
 	}
 	return ctrl.Result{RequeueAfter: resyncInterval}, nil
+}
+
+// selectBastions resolves spec.targetBastionIDs against the AquaductTaaS's
+// published bastion list. Returns the IPs in deterministic (sorted) order,
+// the matching bastion IDs (also sorted), and any IDs that didn't match
+// anything in the list (so the reconciler can surface UnknownBastion).
+//
+// With targetIDs nil/empty, we include every non-suspended bastion —
+// matching the server's "fan out to all" default — and `missing` is empty.
+func selectBastions(bastions []weftv1alpha1.BastionInfo, targetIDs []string) (ips []string, ids []string, missing []string) {
+	byID := make(map[string]weftv1alpha1.BastionInfo, len(bastions))
+	for _, b := range bastions {
+		byID[b.ID] = b
+	}
+	if len(targetIDs) == 0 {
+		for _, b := range bastions {
+			if b.Suspended || b.IP == "" {
+				continue
+			}
+			ips = append(ips, b.IP)
+			ids = append(ids, b.ID)
+		}
+	} else {
+		for _, want := range targetIDs {
+			b, ok := byID[want]
+			if !ok {
+				missing = append(missing, want)
+				continue
+			}
+			if b.IP == "" {
+				// A bastion that's known but has no IP is effectively
+				// unusable for DNS — surface it as missing rather than
+				// silently dropping it.
+				missing = append(missing, want)
+				continue
+			}
+			ips = append(ips, b.IP)
+			ids = append(ids, b.ID)
+		}
+	}
+	sort.Strings(ips)
+	sort.Strings(ids)
+	sort.Strings(missing)
+	return
+}
+
+// stringSlicesEqual compares two pre-sorted string slices for set
+// equality. Both slices must already be sorted (the caller guarantees
+// this). Faster than a set-based compare and avoids allocation.
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // resolveAquaductTaaS loads the referenced AquaductTaaS and its token.
@@ -369,11 +469,22 @@ func (r *DNSRecordReconciler) handleDeletion(ctx context.Context, dr *weftv1alph
 	_ = taas
 
 	if err := r.APIClient.DeleteDomain(ctx, token, dr.Spec.DomainName); err != nil {
-		logger.Error(err, "failed to delete domain", "domain", dr.Spec.DomainName)
-		return r.failure(ctx, dr, conditionReady, "CleanupFailed",
-			fmt.Sprintf("DELETE /domain/%s: %s", dr.Spec.DomainName, err))
+		if errors.Is(err, aquaducttaas.ErrDomainForeign) {
+			// The record is owned by someone else. We never had write
+			// access, so there's nothing for the operator to clean up
+			// — drop the finalizer and let the object delete. Logged
+			// at info level so operators can spot externally-managed
+			// records that weft never controlled.
+			logger.Info("DELETE refused as foreign-owned; record was never ours, removing finalizer",
+				"domain", dr.Spec.DomainName, "error", err)
+		} else {
+			logger.Error(err, "failed to delete domain", "domain", dr.Spec.DomainName)
+			return r.failure(ctx, dr, conditionReady, "CleanupFailed",
+				fmt.Sprintf("DELETE /domain/%s: %s", dr.Spec.DomainName, err))
+		}
+	} else {
+		logger.Info("Unregistered domain on aquaduct.dev", "domain", dr.Spec.DomainName)
 	}
-	logger.Info("Unregistered domain on aquaduct.dev", "domain", dr.Spec.DomainName)
 
 	controllerutil.RemoveFinalizer(dr, finalizerName)
 	if err := r.Update(ctx, dr); err != nil {
