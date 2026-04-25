@@ -34,6 +34,15 @@ import (
 // not-found means "safe to create".
 var ErrDomainNotFound = errors.New("aquaduct.dev: domain not found")
 
+// ErrDomainForeign is returned by PatchDomain when the server refuses
+// the write because the record is owned by a different user (403/401)
+// or a concurrent writer won a conflict (409). The reconciler treats
+// this as a durable condition to surface on status — retrying won't
+// help without operator intervention, but we still requeue so a later
+// ownership change (e.g. the other party releases the record) heals
+// automatically.
+var ErrDomainForeign = errors.New("aquaduct.dev: domain is owned by a different user")
+
 // Domain mirrors the database.Domain shape from the aquaduct.dev OpenAPI
 // spec. Only fields consumed by the reconciler are modeled here; the
 // server may return additional fields (timestamps, metadata) that this
@@ -62,6 +71,16 @@ type DomainAPIClient interface {
 	// over a record they didn't originally create ("clobber"), but is
 	// expected to DeleteDomain on teardown regardless.
 	PutDomain(ctx context.Context, token, name string) (*Domain, error)
+
+	// PatchDomain asserts our write access over an existing `name`. The
+	// request body is minimal on purpose — we don't know our own user_id
+	// locally, so we let the server's auth layer decide: a 2xx means we
+	// own (or just took over) the record; a 401/403/409 means someone
+	// else holds it, surfaced as ErrDomainForeign so the reconciler can
+	// set a ForeignOwned condition. A 404 between GET and PATCH is a
+	// race — the record was deleted under us — surfaced as
+	// ErrDomainNotFound so the caller can retry the create path.
+	PatchDomain(ctx context.Context, token, name string) (*Domain, error)
 
 	// DeleteDomain removes `name`. A 404 is treated as success (the
 	// record is already gone, which is the goal). All other errors are
@@ -150,6 +169,57 @@ func (c *HTTPAPIClient) PutDomain(ctx context.Context, token, name string) (*Dom
 	// Some servers return 204 No Content on PUT; if the body was empty
 	// but status was 2xx, synthesize the name from the request so callers
 	// still get a populated Domain.
+	if d.DomainName == "" {
+		d.DomainName = name
+	}
+	return &Domain{ID: d.ID, Name: d.DomainName}, nil
+}
+
+func (c *HTTPAPIClient) PatchDomain(ctx context.Context, token, name string) (*Domain, error) {
+	// The server's PATCH accepts {id, domain_name, user_id}. We send
+	// only domain_name: we don't know our own user_id, and the id is
+	// the path parameter. Effectively a "confirm I can write" probe —
+	// the server resolves the caller's identity from the JWT and
+	// either accepts or rejects based on current ownership.
+	body, err := json.Marshal(apiDomain{DomainName: name})
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.authedRequest(ctx, token, func(jwt string) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPatch, c.Endpoint+apiBasePath+"/domain/"+url.PathEscape(name), bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+jwt)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json")
+		return req, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusNotFound:
+		return nil, ErrDomainNotFound
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusConflict:
+		// authedRequest already retried once on 401 (stale JWT). If we
+		// still get here, the server genuinely refuses the write —
+		// either the record is owned by someone else or the token
+		// doesn't have permission to claim it.
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("%w (status %d): %s", ErrDomainForeign, resp.StatusCode, string(respBody))
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("aquaduct.dev API returned %d patching domain %q: %s", resp.StatusCode, name, string(respBody))
+	}
+
+	var d apiDomain
+	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
+		return nil, fmt.Errorf("decode domain response: %w", err)
+	}
 	if d.DomainName == "" {
 		d.DomainName = name
 	}

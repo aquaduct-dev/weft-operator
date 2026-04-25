@@ -45,14 +45,16 @@ type mockDomainClient struct {
 	mu       sync.Mutex
 	GetFn    func(ctx context.Context, token, name string) (*aquaducttaas.Domain, error)
 	PutFn    func(ctx context.Context, token, name string) (*aquaducttaas.Domain, error)
+	PatchFn  func(ctx context.Context, token, name string) (*aquaducttaas.Domain, error)
 	DeleteFn func(ctx context.Context, token, name string) error
 	LookupFn func(ctx context.Context, token, name string) ([]string, error)
 
-	LastToken string
-	GetCalls  int
-	PutCalls  int
-	DelCalls  int
-	LookCalls int
+	LastToken  string
+	GetCalls   int
+	PutCalls   int
+	PatchCalls int
+	DelCalls   int
+	LookCalls  int
 }
 
 func (m *mockDomainClient) GetDomain(ctx context.Context, token, name string) (*aquaducttaas.Domain, error) {
@@ -75,6 +77,21 @@ func (m *mockDomainClient) PutDomain(ctx context.Context, token, name string) (*
 		return &aquaducttaas.Domain{ID: "id-" + name, Name: name}, nil
 	}
 	return m.PutFn(ctx, token, name)
+}
+
+func (m *mockDomainClient) PatchDomain(ctx context.Context, token, name string) (*aquaducttaas.Domain, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.LastToken = token
+	m.PatchCalls++
+	if m.PatchFn == nil {
+		// Default: PATCH succeeds and returns a record with the name's
+		// ID. This mirrors the real server accepting our claim when no
+		// foreign-owner conflict exists, so tests that don't care about
+		// PATCH semantics don't need to stub it out.
+		return &aquaducttaas.Domain{ID: "id-" + name, Name: name}, nil
+	}
+	return m.PatchFn(ctx, token, name)
 }
 
 func (m *mockDomainClient) DeleteDomain(ctx context.Context, token, name string) error {
@@ -109,6 +126,12 @@ func (m *mockDomainClient) setPut(fn func(ctx context.Context, token, name strin
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.PutFn = fn
+}
+
+func (m *mockDomainClient) setPatch(fn func(ctx context.Context, token, name string) (*aquaducttaas.Domain, error)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.PatchFn = fn
 }
 
 func (m *mockDomainClient) setDelete(fn func(ctx context.Context, token, name string) error) {
@@ -255,10 +278,14 @@ var _ = Describe("DNSRecord Controller", func() {
 		Expect(ready.Status).To(Equal(metav1.ConditionTrue))
 	})
 
-	It("Clobbers a pre-existing registration and marks ClobberedPreexisting=true", func(ctx context.Context) {
+	It("Clobbers a pre-existing registration via PATCH and marks ClobberedPreexisting=true", func(ctx context.Context) {
 		createSecret(ctx, "token", "tok-clobber")
 		createTaaS(ctx, "token")
 		mock.setGet(func(ctx context.Context, token, name string) (*aquaducttaas.Domain, error) {
+			return &aquaducttaas.Domain{ID: "preexisting-xyz", Name: name}, nil
+		})
+		mock.setPatch(func(ctx context.Context, token, name string) (*aquaducttaas.Domain, error) {
+			// Server accepted the take-over; returns the (now ours) record.
 			return &aquaducttaas.Domain{ID: "preexisting-xyz", Name: name}, nil
 		})
 		createDNSRecord(ctx)
@@ -267,10 +294,81 @@ var _ = Describe("DNSRecord Controller", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		Expect(mock.PutCalls).To(Equal(0), "a pre-existing record is inherited, not re-created")
+		Expect(mock.PatchCalls).To(Equal(1), "existing records must be PATCHed to assert ownership")
 
 		d := getDNSRecord(ctx)
 		Expect(d.Status.DomainID).To(Equal("preexisting-xyz"))
 		Expect(d.Status.ClobberedPreexisting).To(BeTrue())
+		Expect(findCondition(d.Status.Conditions, "Registered").Status).To(Equal(metav1.ConditionTrue))
+	})
+
+	It("Sets Registered=False with ForeignOwned when PATCH is refused", func(ctx context.Context) {
+		createSecret(ctx, "token", "tok")
+		createTaaS(ctx, "token")
+		mock.setGet(func(ctx context.Context, token, name string) (*aquaducttaas.Domain, error) {
+			return &aquaducttaas.Domain{ID: "someone-elses-id", Name: name}, nil
+		})
+		mock.setPatch(func(ctx context.Context, token, name string) (*aquaducttaas.Domain, error) {
+			// The real HTTP client wraps a 403 as `%w: ...` around
+			// ErrDomainForeign; the reconciler matches on errors.Is, so
+			// returning the sentinel directly is equivalent for tests.
+			return nil, aquaducttaas.ErrDomainForeign
+		})
+		createDNSRecord(ctx)
+
+		res, err := reconcile(ctx, newReconciler())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.RequeueAfter).To(Equal(30*time.Second),
+			"a foreign-owned record should requeue on the error cadence so a later release of the domain heals automatically")
+
+		Expect(mock.PatchCalls).To(Equal(1))
+		Expect(mock.PutCalls).To(Equal(0), "we must not attempt PUT when the record belongs to someone else")
+
+		d := getDNSRecord(ctx)
+		cond := findCondition(d.Status.Conditions, "Registered")
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal("ForeignOwned"))
+		Expect(cond.Message).To(ContainSubstring("different user"))
+
+		// Ready must also reflect the failure — users filtering on
+		// Ready=False should see the foreign-owned status without
+		// needing to look at the component condition.
+		ready := findCondition(d.Status.Conditions, "Ready")
+		Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+		Expect(ready.Reason).To(Equal("ForeignOwned"))
+	})
+
+	It("Recovers when PATCH races with an external deletion", func(ctx context.Context) {
+		createSecret(ctx, "token", "tok")
+		createTaaS(ctx, "token")
+		// GET returns a record that vanishes before PATCH lands. Once
+		// the PATCH observes the 404 and flips `vanished`, subsequent
+		// GETs return 404 so the reconciler proceeds down the PUT path
+		// within the same reconcile helper run. Observable outcome:
+		// exactly one PUT was issued and Registered=True.
+		vanished := int32(0)
+		mock.setGet(func(ctx context.Context, token, name string) (*aquaducttaas.Domain, error) {
+			if atomic.LoadInt32(&vanished) == 1 {
+				return nil, aquaducttaas.ErrDomainNotFound
+			}
+			return &aquaducttaas.Domain{ID: "transient-id", Name: name}, nil
+		})
+		mock.setPatch(func(ctx context.Context, token, name string) (*aquaducttaas.Domain, error) {
+			atomic.StoreInt32(&vanished, 1)
+			return nil, aquaducttaas.ErrDomainNotFound
+		})
+		createDNSRecord(ctx)
+
+		_, err := reconcile(ctx, newReconciler())
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(mock.PatchCalls).To(Equal(1),
+			"the initial GET returned a record so PATCH was attempted exactly once")
+		Expect(mock.PutCalls).To(Equal(1),
+			"after the race resolves to 'missing', the reconciler falls through to PUT")
+
+		d := getDNSRecord(ctx)
 		Expect(findCondition(d.Status.Conditions, "Registered").Status).To(Equal(metav1.ConditionTrue))
 	})
 

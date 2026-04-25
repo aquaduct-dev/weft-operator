@@ -156,16 +156,46 @@ func (r *DNSRecordReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return r.failure(ctx, &dr, conditionRegistered, "APIError",
 			fmt.Sprintf("GET /domain/%s: %s", dr.Spec.DomainName, err))
 	default:
-		// Record exists. If we hadn't seen it before (status.DomainID
-		// empty), we're clobbering — someone else created it and we're
-		// taking over. Record that fact so operators can tell apart
-		// "we created this" from "we inherited this".
+		// Record exists — assert our write access via PATCH. If the
+		// server accepts, we own it (possibly just took it over); if
+		// the server refuses with 401/403/409, the record belongs to
+		// someone else and we surface a ForeignOwned condition instead
+		// of falsely claiming Registered=True.
+		//
+		// We PATCH on every reconcile (not just the first time we see
+		// an existing record) so ownership stays periodically verified
+		// and a server-side reassignment surfaces within one resync.
+		updated, patchErr := r.APIClient.PatchDomain(ctx, token, dr.Spec.DomainName)
+		switch {
+		case errors.Is(patchErr, aquaducttaas.ErrDomainForeign):
+			logger.Error(patchErr, "domain is owned by a different user",
+				"domain", dr.Spec.DomainName)
+			return r.failure(ctx, &dr, conditionRegistered, "ForeignOwned",
+				fmt.Sprintf("PATCH /domain/%s refused — record belongs to a different user: %s",
+					dr.Spec.DomainName, patchErr))
+		case errors.Is(patchErr, aquaducttaas.ErrDomainNotFound):
+			// Race: record was deleted between our GET and PATCH.
+			// Requeue immediately so the next loop hits the PUT path.
+			logger.Info("Record vanished between GET and PATCH, retrying",
+				"domain", dr.Spec.DomainName)
+			return ctrl.Result{Requeue: true}, nil
+		case patchErr != nil:
+			logger.Error(patchErr, "failed to patch domain", "domain", dr.Spec.DomainName)
+			return r.failure(ctx, &dr, conditionRegistered, "APIError",
+				fmt.Sprintf("PATCH /domain/%s: %s", dr.Spec.DomainName, patchErr))
+		}
+		// If this is the first reconcile that observed the record, we
+		// took ownership of something pre-existing. Flag it so operators
+		// can distinguish "we created this" from "we inherited this".
+		// Subsequent reconciles preserve the flag — a clobber in history
+		// is a clobber forever, since the finalizer's DeleteDomain will
+		// still unregister regardless of origin.
 		if dr.Status.DomainID == "" {
 			dr.Status.ClobberedPreexisting = true
 			logger.Info("Took over pre-existing domain registration",
 				"domain", dr.Spec.DomainName, "id", existing.ID)
 		}
-		dr.Status.DomainID = existing.ID
+		dr.Status.DomainID = updated.ID
 	}
 
 	meta.SetStatusCondition(&dr.Status.Conditions, metav1.Condition{
