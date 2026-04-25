@@ -1,6 +1,11 @@
 # Weft Operator
 
-[![Test](https://github.com/aquaduct-dev/weft-operator/actions/workflows/test.yml/badge.svg)](https://github.com/aquaduct-dev/weft-operator/actions/workflows/test.yml) [![Release](https://github.com/aquaduct-dev/weft-operator/actions/workflows/release.yml/badge.svg)](https://github.com/aquaduct-dev/weft-operator/actions/workflows/release.yml)
+[![Test](https://github.com/aquaduct-dev/weft-operator/actions/workflows/test.yml/badge.svg)](https://github.com/aquaduct-dev/weft-operator/actions/workflows/test.yml)
+[![Release](https://github.com/aquaduct-dev/weft-operator/actions/workflows/release.yml/badge.svg)](https://github.com/aquaduct-dev/weft-operator/actions/workflows/release.yml)
+[![Latest release](https://img.shields.io/github/v/release/aquaduct-dev/weft-operator?label=release&sort=semver)](https://github.com/aquaduct-dev/weft-operator/releases/latest)
+[![Go version](https://img.shields.io/github/go-mod/go-version/aquaduct-dev/weft-operator)](go.mod)
+[![Container image](https://img.shields.io/badge/image-ghcr.io%2Faquaduct--dev%2Fweft--operator-blue?logo=github)](https://github.com/aquaduct-dev/weft-operator/pkgs/container/weft-operator)
+[![Helm chart](https://img.shields.io/badge/chart-ghcr.io%2Faquaduct--dev%2Fcharts%2Fweft--operator-0F1689?logo=helm&logoColor=white)](https://github.com/aquaduct-dev/weft-operator/pkgs/container/charts%2Fweft-operator)
 
 This repo contains code for the Weft operator.  
 
