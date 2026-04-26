@@ -3,7 +3,7 @@ module aquaduct.dev/weft-operator
 go 1.25.0
 
 require (
-	github.com/aquaduct-dev/weft v1.0.64
+	github.com/aquaduct-dev/weft v1.1.35
 	github.com/fatih/color v1.18.0
 	github.com/gobuffalo/flect v1.0.3
 	github.com/onsi/ginkgo/v2 v2.27.2
