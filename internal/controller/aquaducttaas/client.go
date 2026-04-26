@@ -70,9 +70,11 @@ type ExternalServer struct {
 	// drop straight into WeftServer.Spec.ConnectionString.
 	ConnectionString string
 
-	// Suspended mirrors database.Bastion.suspended. Currently informational;
-	// the reconciler still materializes a WeftServer for suspended bastions
-	// so the rest of the cluster's view stays consistent.
+	// Suspended mirrors database.Bastion.suspended. The AquaductTaaS
+	// reconciler skips materializing a WeftServer for suspended bastions
+	// (they have no usable IP), but still surfaces them on
+	// AquaductTaaS.status.bastions so downstream reconcilers like
+	// DNSRecord can fan out only to active bastions.
 	Suspended bool
 }
 

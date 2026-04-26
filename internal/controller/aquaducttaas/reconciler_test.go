@@ -249,7 +249,7 @@ var _ = Describe("AquaductTaaS Controller", func() {
 		srvID := "id-" + srvName
 		mock.setList(func(ctx context.Context, token string) ([]aquaducttaas.ExternalServer, error) {
 			return []aquaducttaas.ExternalServer{
-				{ID: srvID, Name: srvName, ConnectionString: "weft://secret1@1.2.3.4:8080"},
+				{ID: srvID, Name: srvName, IP: "1.2.3.4", ConnectionString: "weft://secret1@1.2.3.4:8080"},
 			}, nil
 		})
 
@@ -296,7 +296,7 @@ var _ = Describe("AquaductTaaS Controller", func() {
 
 		mock.setList(func(ctx context.Context, token string) ([]aquaducttaas.ExternalServer, error) {
 			return []aquaducttaas.ExternalServer{
-				{ID: "id-" + srvName, Name: srvName, ConnectionString: "weft://v1@1.1.1.1:8080"},
+				{ID: "id-" + srvName, Name: srvName, IP: "1.1.1.1", ConnectionString: "weft://v1@1.1.1.1:8080"},
 			}, nil
 		})
 		_, err := reconcile(ctx, newReconciler())
@@ -304,7 +304,7 @@ var _ = Describe("AquaductTaaS Controller", func() {
 
 		mock.setList(func(ctx context.Context, token string) ([]aquaducttaas.ExternalServer, error) {
 			return []aquaducttaas.ExternalServer{
-				{ID: "id-" + srvName, Name: srvName, ConnectionString: "weft://v2@2.2.2.2:9000"},
+				{ID: "id-" + srvName, Name: srvName, IP: "2.2.2.2", ConnectionString: "weft://v2@2.2.2.2:9000"},
 			}, nil
 		})
 		_, err = reconcile(ctx, newReconciler())
@@ -331,8 +331,8 @@ var _ = Describe("AquaductTaaS Controller", func() {
 
 		mock.setList(func(ctx context.Context, token string) ([]aquaducttaas.ExternalServer, error) {
 			return []aquaducttaas.ExternalServer{
-				{ID: "id-kept", Name: keptName, ConnectionString: "weft://k@1.1.1.1:80"},
-				{ID: "id-gone", Name: goneName, ConnectionString: "weft://g@2.2.2.2:80"},
+				{ID: "id-kept", Name: keptName, IP: "1.1.1.1", ConnectionString: "weft://k@1.1.1.1:80"},
+				{ID: "id-gone", Name: goneName, IP: "2.2.2.2", ConnectionString: "weft://g@2.2.2.2:80"},
 			}, nil
 		})
 		_, err := reconcile(ctx, newReconciler())
@@ -349,7 +349,7 @@ var _ = Describe("AquaductTaaS Controller", func() {
 		By("After the API drops goneName, the reconciler deletes it")
 		mock.setList(func(ctx context.Context, token string) ([]aquaducttaas.ExternalServer, error) {
 			return []aquaducttaas.ExternalServer{
-				{ID: "id-kept", Name: keptName, ConnectionString: "weft://k@1.1.1.1:80"},
+				{ID: "id-kept", Name: keptName, IP: "1.1.1.1", ConnectionString: "weft://k@1.1.1.1:80"},
 			}, nil
 		})
 		_, err = reconcile(ctx, newReconciler())
@@ -407,8 +407,8 @@ var _ = Describe("AquaductTaaS Controller", func() {
 		})
 		mock.setList(func(ctx context.Context, token string) ([]aquaducttaas.ExternalServer, error) {
 			return []aquaducttaas.ExternalServer{
-				{ID: "a", Name: "dup", ConnectionString: "weft://a@1.1.1.1:80"},
-				{ID: "b", Name: "dup", ConnectionString: "weft://b@2.2.2.2:80"},
+				{ID: "a", Name: "dup", IP: "1.1.1.1", ConnectionString: "weft://a@1.1.1.1:80"},
+				{ID: "b", Name: "dup", IP: "2.2.2.2", ConnectionString: "weft://b@2.2.2.2:80"},
 			}, nil
 		})
 		_, err := reconcile(ctx, newReconciler())
@@ -417,6 +417,80 @@ var _ = Describe("AquaductTaaS Controller", func() {
 		Expect(cond).NotTo(BeNil())
 		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 		Expect(cond.Reason).To(Equal("SyncError"))
+	})
+
+	It("Skips suspended and no-IP bastions but still surfaces them on status.bastions", func(ctx context.Context) {
+		createSecret(ctx, "token", "tok")
+		createTaaS(ctx, &corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+			Key:                  "token",
+		})
+
+		activeName := "active-" + randomSuffix()
+		suspendedName := "suspended-" + randomSuffix()
+		noIPName := "noip-" + randomSuffix()
+
+		mock.setList(func(ctx context.Context, token string) ([]aquaducttaas.ExternalServer, error) {
+			return []aquaducttaas.ExternalServer{
+				{ID: "id-active", Name: activeName, IP: "1.2.3.4", ConnectionString: "weft://a@1.2.3.4:9092"},
+				{ID: "id-susp", Name: suspendedName, IP: "5.6.7.8", ConnectionString: "weft://s@5.6.7.8:9092", Suspended: true},
+				{ID: "id-noip", Name: noIPName, IP: "", ConnectionString: "weft://n@:9092"},
+			}, nil
+		})
+		_, err := reconcile(ctx, newReconciler())
+		Expect(err).NotTo(HaveOccurred())
+
+		By("only the active bastion is materialized as a WeftServer")
+		Eventually(func() error {
+			return k8sClient.Get(ctx, types.NamespacedName{Name: activeName, Namespace: "default"}, &weftv1alpha1.WeftServer{})
+		}, timeout, interval).Should(Succeed())
+		Expect(k8serrors.IsNotFound(
+			k8sClient.Get(ctx, types.NamespacedName{Name: suspendedName, Namespace: "default"}, &weftv1alpha1.WeftServer{}),
+		)).To(BeTrue(), "suspended bastion must not produce a WeftServer with a broken connection string")
+		Expect(k8serrors.IsNotFound(
+			k8sClient.Get(ctx, types.NamespacedName{Name: noIPName, Namespace: "default"}, &weftv1alpha1.WeftServer{}),
+		)).To(BeTrue(), "no-IP bastion must not produce a WeftServer with a broken connection string")
+
+		By("status reports only the active server as synced but lists all bastions")
+		t := getTaaS(ctx)
+		Expect(t.Status.SyncedServers).To(ConsistOf(activeName))
+		Expect(t.Status.Bastions).To(HaveLen(3),
+			"status.bastions must include suspended/no-IP bastions so DNSRecord can fan out only to active ones")
+	})
+
+	It("Prunes a previously-active WeftServer once its bastion becomes suspended", func(ctx context.Context) {
+		createSecret(ctx, "token", "tok")
+		createTaaS(ctx, &corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+			Key:                  "token",
+		})
+		srvName := "rolling-" + randomSuffix()
+
+		mock.setList(func(ctx context.Context, token string) ([]aquaducttaas.ExternalServer, error) {
+			return []aquaducttaas.ExternalServer{
+				{ID: "id-" + srvName, Name: srvName, IP: "1.1.1.1", ConnectionString: "weft://x@1.1.1.1:9092"},
+			}, nil
+		})
+		_, err := reconcile(ctx, newReconciler())
+		Expect(err).NotTo(HaveOccurred())
+		Eventually(func() error {
+			return k8sClient.Get(ctx, types.NamespacedName{Name: srvName, Namespace: "default"}, &weftv1alpha1.WeftServer{})
+		}, timeout, interval).Should(Succeed())
+
+		mock.setList(func(ctx context.Context, token string) ([]aquaducttaas.ExternalServer, error) {
+			return []aquaducttaas.ExternalServer{
+				{ID: "id-" + srvName, Name: srvName, IP: "", ConnectionString: "weft://x@:9092", Suspended: true},
+			}, nil
+		})
+		_, err = reconcile(ctx, newReconciler())
+		Expect(err).NotTo(HaveOccurred())
+
+		Eventually(func() bool {
+			return k8serrors.IsNotFound(
+				k8sClient.Get(ctx, types.NamespacedName{Name: srvName, Namespace: "default"}, &weftv1alpha1.WeftServer{}),
+			)
+		}, timeout, interval).Should(BeTrue(),
+			"a WeftServer whose bastion has been suspended on aquaduct.dev must be pruned to avoid leaving a broken connection string in-cluster")
 	})
 
 	It("Is a no-op when the AquaductTaaS has been deleted", func(ctx context.Context) {
@@ -458,8 +532,8 @@ var _ = Describe("AquaductTaaS Controller", func() {
 		id2 := "id-b-" + randomSuffix()
 		mock.setList(func(ctx context.Context, token string) ([]aquaducttaas.ExternalServer, error) {
 			return []aquaducttaas.ExternalServer{
-				{ID: id1, Name: s1, ConnectionString: "weft://a@1.1.1.1:80"},
-				{ID: id2, Name: s2, ConnectionString: "weft://b@2.2.2.2:80"},
+				{ID: id1, Name: s1, IP: "1.1.1.1", ConnectionString: "weft://a@1.1.1.1:80"},
+				{ID: id2, Name: s2, IP: "2.2.2.2", ConnectionString: "weft://b@2.2.2.2:80"},
 			}, nil
 		})
 
@@ -493,7 +567,7 @@ var _ = Describe("AquaductTaaS Controller", func() {
 		srv := "bastion-" + randomSuffix()
 		srvID := "id-" + srv
 		mock.setList(func(ctx context.Context, token string) ([]aquaducttaas.ExternalServer, error) {
-			return []aquaducttaas.ExternalServer{{ID: srvID, Name: srv, ConnectionString: "weft://x@1.1.1.1:80"}}, nil
+			return []aquaducttaas.ExternalServer{{ID: srvID, Name: srv, IP: "1.1.1.1", ConnectionString: "weft://x@1.1.1.1:80"}}, nil
 		})
 		r := newReconciler()
 		_, err := reconcile(ctx, r)

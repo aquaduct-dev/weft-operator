@@ -188,6 +188,14 @@ func (r *AquaductTaaSReconciler) syncWeftServers(ctx context.Context, taas *weft
 		if s.ID == "" {
 			return nil, fmt.Errorf("aquaduct.dev returned server %q with empty id", s.Name)
 		}
+		// Suspended or no-IP bastions have no usable address; mirroring
+		// them would write a connection string like "weft://<sec>@:9092"
+		// that the WeftServer reconciler and tunnel pods can't dial. The
+		// bastion still surfaces on AquaductTaaS.status.bastions for
+		// downstream reconcilers (DNSRecord already filters the same way).
+		if s.Suspended || s.IP == "" {
+			continue
+		}
 		if _, dup := desired[s.Name]; dup {
 			return nil, fmt.Errorf("aquaduct.dev returned duplicate server name %q", s.Name)
 		}
@@ -195,6 +203,9 @@ func (r *AquaductTaaSReconciler) syncWeftServers(ctx context.Context, taas *weft
 	}
 
 	for _, s := range servers {
+		if _, ok := desired[s.Name]; !ok {
+			continue
+		}
 		ws := &weftv1alpha1.WeftServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      s.Name,
