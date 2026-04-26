@@ -45,7 +45,7 @@ go_test(
     ],
     data = [
         "//api/v1alpha1:generated.crds",
-        "//chart/files:gateway-api-crds.yaml",
+        "//tools/envtest:gateway-api-crds.yaml",
         "//tools/envtest:etcd",
         "//tools/envtest:kube-apiserver",
         "//tools/envtest:kubectl",

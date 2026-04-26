@@ -24,6 +24,7 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes"
@@ -103,6 +104,22 @@ func main() {
 	clientset, err := kubernetes.NewForConfig(mgr.GetConfig())
 	if err != nil {
 		setupLog.Error(err, "unable to create kubernetes client")
+		os.Exit(1)
+	}
+
+	// Preflight: the Gateway API CRDs are no longer bundled with this
+	// chart, so the cluster operator must install them out-of-band before
+	// weft-operator starts. Failing here with a clear message is much
+	// nicer than the cryptic informer-cache error you'd get from
+	// mgr.Start when the GVK is unknown to the REST mapper.
+	gatewayGV := gatewayv1.GroupVersion.String()
+	if _, err := clientset.Discovery().ServerResourcesForGroupVersion(gatewayGV); err != nil {
+		if apierrors.IsNotFound(err) {
+			setupLog.Error(err, "Gateway API CRDs are not installed in this cluster — install them before deploying weft-operator (see https://gateway-api.sigs.k8s.io/guides/)",
+				"groupVersion", gatewayGV)
+			os.Exit(1)
+		}
+		setupLog.Error(err, "failed to query Gateway API CRDs", "groupVersion", gatewayGV)
 		os.Exit(1)
 	}
 

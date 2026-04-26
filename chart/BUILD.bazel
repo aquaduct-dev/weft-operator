@@ -11,9 +11,6 @@ helm_chart(
     # other resource, at the cost of helm uninstall deleting them
     # (which we want for dev clusters; long-lived prod tenants should
     # add helm.sh/resource-policy: keep before relying on the CRDs).
-    files = [
-        "//chart/files:gateway-api-crds.yaml",
-    ],
     images = ["//cmd:weft_operator_image_push"],
     registry_url = "oci://ghcr.io/aquaduct-dev/charts",
     templates = [
@@ -23,7 +20,6 @@ helm_chart(
         "//chart/templates:serviceaccount.yaml",
         "//chart/templates:_helpers.tpl",
         "//chart/templates:gatewayclass.yaml",
-        "//chart/templates:gateway-api-crds.yaml",
         "//api/v1alpha1:generated.crds",
     ],
     upgrade_opts = [

@@ -45,25 +45,6 @@ tolerations: []
 
 affinity: {}
 
-# Gateway API CRDs (gateway.networking.k8s.io). A pre-install/pre-upgrade
-# hook Job runs `kubectl apply --server-side` against the vendored bundle
-# at files/gateway-api-crds.yaml. The Job runs on every release lifecycle
-# event — install and each upgrade — so schema updates land when the chart
-# is bumped. The CRDs themselves are not owned by this release (Helm never
-# sees them), so `helm uninstall` leaves them in place for any other
-# Gateway API consumers in the cluster.
-gatewayApiCRDs:
-  # Set to false if the cluster already manages Gateway API CRDs out of
-  # band (e.g. installed by a platform team or another controller).
-  install: true
-  # kubectl image used by the install Job. Must contain kubectl on PATH.
-  # Rancher publishes per-kubectl-version tags (`rancher/kubectl:vX.Y.Z`)
-  # under docker.io; we use that instead of bitnami/kubectl because Bitnami
-  # moved their registry to sha256-only tags so semver tags like `1.31`
-  # no longer resolve.
-  image: docker.io/rancher/kubectl:v1.31.0
-  imagePullPolicy: IfNotPresent
-
 # GatewayClass managed by this chart. Users point their Gateway objects at
 # .Values.gatewayClass.name to route traffic through the weft operator.
 gatewayClass:

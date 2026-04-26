@@ -12,7 +12,6 @@ exports_files([
     "serviceaccount.yaml",
     "_helpers.tpl",
     "gatewayclass.yaml",
-    "gateway-api-crds.yaml",
 ])
 
 filegroup(
