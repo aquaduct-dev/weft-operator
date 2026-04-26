@@ -54,7 +54,7 @@ jobs:
 
       - name: Install Bazelisk
         run: |
-          sudo curl -L -o /usr/local/bin/bazelisk https://github.com/bazelbuild/bazelisk/releases/download/v1.13.0/bazelisk-linux-amd64
+          sudo curl -L -o /usr/local/bin/bazelisk https://github.com/bazelbuild/bazelisk/releases/download/v1.25.0/bazelisk-linux-amd64
           sudo chmod +x /usr/local/bin/bazelisk
           bazelisk --version
 
