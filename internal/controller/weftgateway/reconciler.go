@@ -24,6 +24,7 @@ import (
 	"net/url"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -43,6 +44,21 @@ import (
 
 const (
 	ControllerName = "weft.aquaduct.dev/gateway-controller"
+
+	// dnsFinalizer keeps the Gateway around until DNSRecords this
+	// reconciler stamped on its behalf have been removed. DNSRecords
+	// live in the AquaductTaaS's namespace (typically weft-system),
+	// not the Gateway's, so cross-namespace ownerReferences are
+	// unavailable — finalizer-driven cleanup is the standard escape.
+	dnsFinalizer = "weft.aquaduct.dev/cleanup-dnsrecords"
+
+	// Labels stamped on every DNSRecord we create so we can list+prune
+	// them without re-deriving from spec, and so operators can easily
+	// trace a record back to the Gateway that asked for it.
+	labelGatewayNamespace = "weft.aquaduct.dev/gateway-namespace"
+	labelGatewayName      = "weft.aquaduct.dev/gateway-name"
+	labelCreatedBy        = "created-by"
+	createdByValue        = "weft-operator"
 )
 
 // WeftGatewayReconciler reconciles a Gateway object
@@ -53,6 +69,7 @@ type WeftGatewayReconciler struct {
 
 //+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=get;list;watch;update;patch
 //+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways/status,verbs=get;update;patch
+//+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways/finalizers,verbs=update
 //+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gatewayclasses,verbs=get;list;watch
 //+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gatewayclasses/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch
@@ -61,6 +78,8 @@ type WeftGatewayReconciler struct {
 //+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=udproutes,verbs=get;list;watch
 //+kubebuilder:rbac:groups=weft.aquaduct.dev,resources=weftgateways,verbs=get;list;watch
 //+kubebuilder:rbac:groups=weft.aquaduct.dev,resources=wefttunnels,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=weft.aquaduct.dev,resources=dnsrecords,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=weft.aquaduct.dev,resources=aquaducttaases,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop
 func (r *WeftGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -81,6 +100,35 @@ func (r *WeftGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	if gwClass.Spec.ControllerName != ControllerName {
 		return ctrl.Result{}, nil
+	}
+
+	// Finalizer + deletion handling. Stamp before any side-effects so
+	// the cleanup path can rely on it. DNSRecords are cluster-side
+	// state that survives Gateway deletion if not explicitly removed —
+	// the finalizer is what forces the cleanup to run before the
+	// Gateway disappears.
+	if !gateway.DeletionTimestamp.IsZero() {
+		if controllerutil.ContainsFinalizer(&gateway, dnsFinalizer) {
+			if err := r.cleanupDNSRecords(ctx, &gateway); err != nil {
+				log.Error(err, "Failed to clean up DNSRecords for deleted Gateway")
+				return ctrl.Result{}, err
+			}
+			controllerutil.RemoveFinalizer(&gateway, dnsFinalizer)
+			if err := r.Update(ctx, &gateway); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		return ctrl.Result{}, nil
+	}
+	if !controllerutil.ContainsFinalizer(&gateway, dnsFinalizer) {
+		controllerutil.AddFinalizer(&gateway, dnsFinalizer)
+		if err := r.Update(ctx, &gateway); err != nil {
+			return ctrl.Result{}, err
+		}
+		// Continue rather than return Requeue:true. r.Update mutates
+		// gateway.ResourceVersion in place so the later Status().Update
+		// won't conflict, and creating the tunnels + DNSRecords in the
+		// same reconcile keeps single-call test semantics intact.
 	}
 
 	// Update GatewayClass status to indicate we've accepted it
@@ -116,9 +164,14 @@ func (r *WeftGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 	}
 
-	// Find HTTPRoutes attached to this Gateway
+	// Find HTTPRoutes attached to this Gateway. We list cluster-wide because
+	// Gateway API permits routes in any namespace to reference a Gateway when
+	// the Gateway's listener allowedRoutes.namespaces.from is "All" (or matches
+	// via "Selector"); isRouteAttachedToGateway below cross-checks each route's
+	// parentRefs against this Gateway, so listing cluster-wide is safe.
+	// WeftTunnels we create are still placed in gateway.Namespace.
 	var httpRoutes gatewayv1.HTTPRouteList
-	if err := r.List(ctx, &httpRoutes, client.InNamespace(req.Namespace)); err != nil {
+	if err := r.List(ctx, &httpRoutes); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -449,8 +502,186 @@ func (r *WeftGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 	}
 
+	// Stamp DNSRecord per listener.hostname so external DNS resolves
+	// without anyone hand-applying CRs. Failure is logged but doesn't
+	// fail the whole reconcile — tunnels are still useful even if DNS
+	// is misconfigured (operators can hand-stamp records as a fallback).
+	if err := r.reconcileDNSRecords(ctx, &gateway); err != nil {
+		log.Error(err, "Failed to reconcile DNSRecords")
+	}
+
 	// Update Status (Simplified)
 	return ctrl.Result{}, r.updateGatewayStatus(ctx, &gateway)
+}
+
+// reconcileDNSRecords creates one DNSRecord per unique listener
+// hostname on the Gateway. Records live in the AquaductTaaS's
+// namespace (DNSRecord.spec.aquaductTaaSRef is same-namespace only)
+// and are tracked back to the Gateway by labels. Records this
+// Gateway previously stamped that no longer correspond to a current
+// listener hostname are pruned.
+func (r *WeftGatewayReconciler) reconcileDNSRecords(ctx context.Context, gateway *gatewayv1.Gateway) error {
+	log := log.FromContext(ctx)
+
+	taas, err := r.findSingletonTaaS(ctx)
+	if err != nil {
+		return err
+	}
+	if taas == nil {
+		// Zero or many TaaS objects: autodns is opt-in via "exactly
+		// one TaaS in the cluster", so silently skip in either case.
+		// The "many" case logs because it's almost always misconfig.
+		return nil
+	}
+
+	hostnames := uniqueListenerHostnames(gateway)
+	expected := make(map[string]bool, len(hostnames))
+
+	for _, hostname := range hostnames {
+		recordName := dnsRecordName(gateway, hostname)
+		expected[recordName] = true
+
+		dr := &weftv1alpha1.DNSRecord{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      recordName,
+				Namespace: taas.Namespace,
+			},
+		}
+		op, err := controllerutil.CreateOrUpdate(ctx, r.Client, dr, func() error {
+			dr.Spec.DomainName = hostname
+			dr.Spec.AquaductTaaSRef.Name = taas.Name
+			if dr.Labels == nil {
+				dr.Labels = map[string]string{}
+			}
+			dr.Labels[labelGatewayNamespace] = gateway.Namespace
+			dr.Labels[labelGatewayName] = gateway.Name
+			dr.Labels[labelCreatedBy] = createdByValue
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("reconcile DNSRecord %s/%s: %w", dr.Namespace, dr.Name, err)
+		}
+		if op != controllerutil.OperationResultNone {
+			log.Info("DNSRecord reconciled", "dnsrecord", dr.Name, "hostname", hostname, "operation", op)
+		}
+	}
+
+	// Prune DNSRecords this Gateway previously owned that no longer
+	// match a current listener hostname. Selector pins both gateway
+	// labels so we can't accidentally delete records owned by another
+	// Gateway in another namespace that happens to share a name.
+	var owned weftv1alpha1.DNSRecordList
+	if err := r.List(ctx, &owned,
+		client.InNamespace(taas.Namespace),
+		client.MatchingLabels{
+			labelGatewayNamespace: gateway.Namespace,
+			labelGatewayName:      gateway.Name,
+			labelCreatedBy:        createdByValue,
+		},
+	); err != nil {
+		return fmt.Errorf("list owned DNSRecords: %w", err)
+	}
+	for i := range owned.Items {
+		dr := &owned.Items[i]
+		if expected[dr.Name] {
+			continue
+		}
+		log.Info("Deleting obsolete DNSRecord", "dnsrecord", dr.Name)
+		if err := r.Delete(ctx, dr); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("delete obsolete DNSRecord %s/%s: %w", dr.Namespace, dr.Name, err)
+		}
+	}
+	return nil
+}
+
+// cleanupDNSRecords removes every DNSRecord this reconciler stamped
+// for the Gateway. Called from the deletion path before the
+// finalizer is removed; the DNSRecord controller's own finalizer
+// then runs the aquaduct.dev DELETE /domain/{name} call. Success
+// here just means we initiated the deletion — the DNSRecord may
+// linger briefly while its own finalizer drains.
+func (r *WeftGatewayReconciler) cleanupDNSRecords(ctx context.Context, gateway *gatewayv1.Gateway) error {
+	taas, err := r.findSingletonTaaS(ctx)
+	if err != nil {
+		return err
+	}
+	if taas == nil {
+		// No TaaS to scope by — nothing we could have created.
+		return nil
+	}
+
+	var owned weftv1alpha1.DNSRecordList
+	if err := r.List(ctx, &owned,
+		client.InNamespace(taas.Namespace),
+		client.MatchingLabels{
+			labelGatewayNamespace: gateway.Namespace,
+			labelGatewayName:      gateway.Name,
+			labelCreatedBy:        createdByValue,
+		},
+	); err != nil {
+		return fmt.Errorf("list DNSRecords for cleanup: %w", err)
+	}
+	for i := range owned.Items {
+		dr := &owned.Items[i]
+		if err := r.Delete(ctx, dr); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("delete DNSRecord %s/%s: %w", dr.Namespace, dr.Name, err)
+		}
+	}
+	return nil
+}
+
+// findSingletonTaaS returns the cluster's unique AquaductTaaS, or
+// nil if zero or more than one exist. Autodns is intentionally
+// opt-in via "exactly one TaaS" — multi-tenant clusters need to wire
+// the TaaS choice through a parametersRef instead, which is a
+// follow-up.
+func (r *WeftGatewayReconciler) findSingletonTaaS(ctx context.Context) (*weftv1alpha1.AquaductTaaS, error) {
+	log := log.FromContext(ctx)
+	var list weftv1alpha1.AquaductTaaSList
+	if err := r.List(ctx, &list); err != nil {
+		return nil, fmt.Errorf("list AquaductTaaS: %w", err)
+	}
+	switch len(list.Items) {
+	case 0:
+		return nil, nil
+	case 1:
+		return &list.Items[0], nil
+	default:
+		log.Info("Multiple AquaductTaaS objects in cluster; autodns disabled until a single TaaS is selected (parametersRef wiring pending)",
+			"count", len(list.Items))
+		return nil, nil
+	}
+}
+
+// uniqueListenerHostnames returns the deduplicated set of non-empty
+// listener hostnames on the Gateway, in stable order. A listener
+// without a hostname produces no DNSRecord (there's nothing to
+// register).
+func uniqueListenerHostnames(gateway *gatewayv1.Gateway) []string {
+	seen := make(map[string]bool)
+	out := make([]string, 0, len(gateway.Spec.Listeners))
+	for _, l := range gateway.Spec.Listeners {
+		if l.Hostname == nil || *l.Hostname == "" {
+			continue
+		}
+		h := string(*l.Hostname)
+		if seen[h] {
+			continue
+		}
+		seen[h] = true
+		out = append(out, h)
+	}
+	return out
+}
+
+// dnsRecordName encodes the (gateway-namespace, gateway-name,
+// hostname) triple into a stable, DNS-1123-safe object name.
+// Including the namespace prevents collisions between same-named
+// Gateways in different namespaces stamping records into the same
+// TaaS namespace.
+func dnsRecordName(gateway *gatewayv1.Gateway, hostname string) string {
+	hash := sha256.Sum256([]byte(fmt.Sprintf("%s/%s/%s", gateway.Namespace, gateway.Name, hostname)))
+	return fmt.Sprintf("gw-%s-%s", gateway.Name, hex.EncodeToString(hash[:])[:10])
 }
 
 func (r *WeftGatewayReconciler) isRouteAttachedToGateway(route *gatewayv1.HTTPRoute, gateway *gatewayv1.Gateway) bool {
