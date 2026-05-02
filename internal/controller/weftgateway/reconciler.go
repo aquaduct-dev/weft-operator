@@ -22,6 +22,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -204,7 +205,7 @@ func (r *WeftGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 					port = int32(*backend.Port)
 				}
 
-				srcURL := fmt.Sprintf("http://%s.%s.svc:%d", backend.Name, ns, port)
+				srcURL := fmt.Sprintf("http://%s.%s.svc:%d", backend.Name, ns, port) + httpFiltersToFragment(rule.Filters)
 
 				// Construct DstURL (external hostname + path)
 				// Matches are complicated. Simplifying:
@@ -928,4 +929,38 @@ func (r *WeftGatewayReconciler) createOrUpdateTunnel(
 		log.Info("WeftTunnel reconciled", "tunnel", tunnelName, "operation", op)
 	}
 	return nil
+}
+
+// httpFiltersToFragment translates Gateway-API RequestHeaderModifier filters
+// into the URL-fragment syntax weft tunnels use to rewrite headers on
+// forwarded requests (see weft README "Header Modifiers"):
+//
+//	  set:    name -> name=value
+//	  add:    name -> name=+value     (only set if header is absent)
+//	  remove: name -> name=!del
+//
+// Other filter types (RequestRedirect, URLRewrite, etc.) are not yet
+// translated; weft has no equivalent for most of them. Returns "" when
+// there are no header-modifier filters to apply.
+func httpFiltersToFragment(filters []gatewayv1.HTTPRouteFilter) string {
+	var parts []string
+	for _, f := range filters {
+		if f.Type != gatewayv1.HTTPRouteFilterRequestHeaderModifier || f.RequestHeaderModifier == nil {
+			continue
+		}
+		rhm := f.RequestHeaderModifier
+		for _, h := range rhm.Set {
+			parts = append(parts, fmt.Sprintf("%s=%s", h.Name, url.QueryEscape(h.Value)))
+		}
+		for _, h := range rhm.Add {
+			parts = append(parts, fmt.Sprintf("%s=+%s", h.Name, url.QueryEscape(h.Value)))
+		}
+		for _, name := range rhm.Remove {
+			parts = append(parts, fmt.Sprintf("%s=!del", name))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "/#" + strings.Join(parts, "&")
 }
