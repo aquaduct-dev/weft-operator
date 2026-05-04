@@ -526,5 +526,168 @@ var _ = Describe("WeftGateway Controller", func() {
 			Expect(tunnel.Spec.SrcURL).To(Equal("udp://dns-service.default.svc:53"))
 			Expect(tunnel.Spec.DstURL).To(Equal("udp://:53"))
 		})
+
+		It("Should fan L7 hostnames to all bastions and pin L4 hostnames to one", func(ctx context.Context) {
+			// CRD validation rejects hostnames on TCP/UDP listeners,
+			// so this test (and the matching empty-bastion case below)
+			// uses fakeclient like the existing TCP-route test does.
+			fakeScheme := k8sClient.Scheme()
+
+			taasNS := "weft-system-bastion-test"
+			taas := &weftv1alpha1.AquaductTaaS{
+				ObjectMeta: metav1.ObjectMeta{Name: "main", Namespace: taasNS},
+				Status: weftv1alpha1.AquaductTaaSStatus{
+					Bastions: []weftv1alpha1.BastionInfo{
+						{ID: "bastion-a", Name: "a", IP: "10.0.0.1"},
+						{ID: "bastion-b", Name: "b", IP: "10.0.0.2"},
+						{ID: "bastion-c", Name: "c", IP: "10.0.0.3"},
+						{ID: "bastion-suspended", Name: "s", IP: "10.0.0.9", Suspended: true},
+					},
+					LastSyncTime: ptrTo(metav1.Now()),
+				},
+			}
+
+			gwClass := &gatewayv1.GatewayClass{
+				ObjectMeta: metav1.ObjectMeta{Name: "weft-gateway-class-bastion"},
+				Spec: gatewayv1.GatewayClassSpec{
+					ControllerName: weftgateway.ControllerName,
+				},
+			}
+
+			gwName := "gw-bastion-assoc"
+			webHost := gatewayv1.Hostname("web.bastion-test.example.com")
+			tlsHost := gatewayv1.Hostname("tls.bastion-test.example.com")
+			tcpHost := gatewayv1.Hostname("ssh.bastion-test.example.com")
+			udpHost := gatewayv1.Hostname("dns.bastion-test.example.com")
+			gateway := &gatewayv1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{Name: gwName, Namespace: "default"},
+				Spec: gatewayv1.GatewaySpec{
+					GatewayClassName: gatewayv1.ObjectName(gwClass.Name),
+					Listeners: []gatewayv1.Listener{
+						{Name: "web", Port: 80, Protocol: gatewayv1.HTTPProtocolType, Hostname: &webHost},
+						{Name: "tls", Port: 443, Protocol: gatewayv1.TLSProtocolType, Hostname: &tlsHost},
+						{Name: "ssh", Port: 22, Protocol: gatewayv1.TCPProtocolType, Hostname: &tcpHost},
+						{Name: "dns", Port: 53, Protocol: gatewayv1.UDPProtocolType, Hostname: &udpHost},
+					},
+				},
+			}
+
+			fakeClient := fakeclient.NewClientBuilder().
+				WithScheme(fakeScheme).
+				WithObjects(gwClass, gateway, taas).
+				WithStatusSubresource(gwClass, gateway, taas).
+				Build()
+
+			r := &weftgateway.WeftGatewayReconciler{Client: fakeClient, Scheme: fakeScheme}
+			_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: gwName, Namespace: gateway.Namespace}})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying one DNSRecord per hostname, in the TaaS namespace")
+			var records weftv1alpha1.DNSRecordList
+			Eventually(func() int {
+				fakeClient.List(ctx, &records, client.InNamespace(taasNS), client.MatchingLabels{
+					"weft.aquaduct.dev/gateway-name":      gwName,
+					"weft.aquaduct.dev/gateway-namespace": gateway.Namespace,
+				})
+				return len(records.Items)
+			}, timeout, interval).Should(Equal(4))
+
+			byHost := map[string]weftv1alpha1.DNSRecord{}
+			for _, dr := range records.Items {
+				byHost[dr.Spec.DomainName] = dr
+			}
+
+			eligibleIDs := map[string]bool{
+				"bastion-a": true,
+				"bastion-b": true,
+				"bastion-c": true,
+			}
+
+			By("L7 hostnames keep TargetBastionIDs nil (fan to all)")
+			for _, h := range []string{string(webHost), string(tlsHost)} {
+				dr, ok := byHost[h]
+				Expect(ok).To(BeTrue(), "expected DNSRecord for %s", h)
+				Expect(dr.Spec.TargetBastionIDs).To(BeNil(), "L7 hostname %s should fan to all bastions", h)
+			}
+
+			By("L4 hostnames are pinned to exactly one eligible bastion")
+			for _, h := range []string{string(tcpHost), string(udpHost)} {
+				dr, ok := byHost[h]
+				Expect(ok).To(BeTrue(), "expected DNSRecord for %s", h)
+				Expect(dr.Spec.TargetBastionIDs).To(HaveLen(1), "L4 hostname %s must pin to one bastion", h)
+				Expect(eligibleIDs[dr.Spec.TargetBastionIDs[0]]).To(BeTrue(),
+					"L4 hostname %s pinned to non-eligible bastion %q", h, dr.Spec.TargetBastionIDs[0])
+				Expect(dr.Spec.TargetBastionIDs[0]).NotTo(Equal("bastion-suspended"),
+					"suspended bastion must never be picked")
+			}
+
+			By("Re-reconcile leaves the same pin (deterministic)")
+			before := byHost[string(tcpHost)].Spec.TargetBastionIDs[0]
+			_, err = r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: gwName, Namespace: gateway.Namespace}})
+			Expect(err).NotTo(HaveOccurred())
+			var afterRecord weftv1alpha1.DNSRecord
+			Expect(fakeClient.Get(ctx, types.NamespacedName{
+				Name:      byHost[string(tcpHost)].Name,
+				Namespace: taasNS,
+			}, &afterRecord)).To(Succeed())
+			Expect(afterRecord.Spec.TargetBastionIDs).To(ConsistOf(before))
+		})
+
+		It("Should NOT stamp a DNSRecord for an L4 hostname when no bastion is eligible", func(ctx context.Context) {
+			// We can't safely write an explicit-empty TargetBastionIDs
+			// (omitempty collapses []vs nil through serialization, which
+			// would silently degrade to "fan to all"), so when no
+			// bastion is eligible we just don't create the record. The
+			// AquaductTaaS watch will re-enqueue this Gateway when a
+			// bastion comes online and the record materializes then.
+			fakeScheme := k8sClient.Scheme()
+
+			taasNS := "weft-system-empty-bastion-test"
+			taas := &weftv1alpha1.AquaductTaaS{
+				ObjectMeta: metav1.ObjectMeta{Name: "main", Namespace: taasNS},
+				Status: weftv1alpha1.AquaductTaaSStatus{
+					Bastions: []weftv1alpha1.BastionInfo{
+						{ID: "b1", IP: "10.1.0.1", Suspended: true},
+					},
+					LastSyncTime: ptrTo(metav1.Now()),
+				},
+			}
+
+			gwClass := &gatewayv1.GatewayClass{
+				ObjectMeta: metav1.ObjectMeta{Name: "weft-gateway-class-empty-bastion"},
+				Spec: gatewayv1.GatewayClassSpec{
+					ControllerName: weftgateway.ControllerName,
+				},
+			}
+
+			gwName := "gw-empty-bastion"
+			tcpHost := gatewayv1.Hostname("ssh.empty.example.com")
+			gateway := &gatewayv1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{Name: gwName, Namespace: "default"},
+				Spec: gatewayv1.GatewaySpec{
+					GatewayClassName: gatewayv1.ObjectName(gwClass.Name),
+					Listeners: []gatewayv1.Listener{
+						{Name: "ssh", Port: 22, Protocol: gatewayv1.TCPProtocolType, Hostname: &tcpHost},
+					},
+				},
+			}
+
+			fakeClient := fakeclient.NewClientBuilder().
+				WithScheme(fakeScheme).
+				WithObjects(gwClass, gateway, taas).
+				WithStatusSubresource(gwClass, gateway, taas).
+				Build()
+
+			r := &weftgateway.WeftGatewayReconciler{Client: fakeClient, Scheme: fakeScheme}
+			_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: gwName, Namespace: gateway.Namespace}})
+			Expect(err).NotTo(HaveOccurred())
+
+			var records weftv1alpha1.DNSRecordList
+			Expect(fakeClient.List(ctx, &records, client.InNamespace(taasNS), client.MatchingLabels{
+				"weft.aquaduct.dev/gateway-name": gwName,
+			})).To(Succeed())
+			Expect(records.Items).To(BeEmpty(),
+				"L4 hostname with no eligible bastion must not produce a DNSRecord (would silently fan-out wrong)")
+		})
 	})
 })

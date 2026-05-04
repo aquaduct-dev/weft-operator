@@ -19,9 +19,11 @@ package weftgateway
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -535,13 +537,38 @@ func (r *WeftGatewayReconciler) reconcileDNSRecords(ctx context.Context, gateway
 		return nil
 	}
 
-	hostnames := uniqueListenerHostnames(gateway)
-	expected := make(map[string]bool, len(hostnames))
+	specs := classifyListenerHostnames(gateway)
+	expected := make(map[string]bool, len(specs))
 
-	for _, hostname := range hostnames {
-		recordName := dnsRecordName(gateway, hostname)
+	for _, hs := range specs {
+		// L7 hostnames (HTTP/HTTPS/TLS) keep the "fan to all" default —
+		// nil TargetBastionIDs lets every non-suspended bastion serve
+		// the hostname, since L7 demuxes by Host header / SNI. L4
+		// hostnames (any TCP/UDP listener) get pinned to a single
+		// bastion: an L4 listener owns its bastion's port exclusively,
+		// so multi-bastion fan-out would either waste port slots on
+		// every other bastion or collide with sibling tunnels.
+		var targetBastionIDs []string
+		if hs.L4 {
+			id := pickL4Bastion(taas.Status.Bastions, gateway, hs.Hostname)
+			if id == "" {
+				// No eligible bastion → don't stamp a record at all.
+				// We can't write an "explicit empty set" because
+				// omitempty on TargetBastionIDs collapses []vs nil
+				// after a round-trip, which would silently degrade to
+				// "fan to all" — exactly the wrong behavior for L4.
+				// The AquaductTaaS watch re-enqueues this Gateway when
+				// the bastion list changes, so the record materializes
+				// as soon as a bastion is eligible.
+				log.Info("Skipping DNSRecord for L4 hostname: no eligible bastion in TaaS",
+					"hostname", hs.Hostname, "gateway", gateway.Name)
+				continue
+			}
+			targetBastionIDs = []string{id}
+		}
+
+		recordName := dnsRecordName(gateway, hs.Hostname)
 		expected[recordName] = true
-
 		dr := &weftv1alpha1.DNSRecord{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      recordName,
@@ -549,8 +576,9 @@ func (r *WeftGatewayReconciler) reconcileDNSRecords(ctx context.Context, gateway
 			},
 		}
 		op, err := controllerutil.CreateOrUpdate(ctx, r.Client, dr, func() error {
-			dr.Spec.DomainName = hostname
+			dr.Spec.DomainName = hs.Hostname
 			dr.Spec.AquaductTaaSRef.Name = taas.Name
+			dr.Spec.TargetBastionIDs = targetBastionIDs
 			if dr.Labels == nil {
 				dr.Labels = map[string]string{}
 			}
@@ -563,7 +591,7 @@ func (r *WeftGatewayReconciler) reconcileDNSRecords(ctx context.Context, gateway
 			return fmt.Errorf("reconcile DNSRecord %s/%s: %w", dr.Namespace, dr.Name, err)
 		}
 		if op != controllerutil.OperationResultNone {
-			log.Info("DNSRecord reconciled", "dnsrecord", dr.Name, "hostname", hostname, "operation", op)
+			log.Info("DNSRecord reconciled", "dnsrecord", dr.Name, "hostname", hs.Hostname, "l4", hs.L4, "targetBastionIDs", targetBastionIDs, "operation", op)
 		}
 	}
 
@@ -654,24 +682,79 @@ func (r *WeftGatewayReconciler) findSingletonTaaS(ctx context.Context) (*weftv1a
 	}
 }
 
-// uniqueListenerHostnames returns the deduplicated set of non-empty
-// listener hostnames on the Gateway, in stable order. A listener
-// without a hostname produces no DNSRecord (there's nothing to
-// register).
-func uniqueListenerHostnames(gateway *gatewayv1.Gateway) []string {
-	seen := make(map[string]bool)
-	out := make([]string, 0, len(gateway.Spec.Listeners))
+// hostnameSpec is the per-hostname classification used to decide
+// bastion association for DNSRecord stamping. L4=true marks a
+// hostname whose listener set includes any TCP or UDP protocol —
+// those can't share a bastion's IP+port the way HTTP/HTTPS/TLS can
+// (L7 demuxes by Host header, TLS by SNI), so they get pinned to
+// one bastion instead of fanning to all.
+type hostnameSpec struct {
+	Hostname string
+	L4       bool
+}
+
+// classifyListenerHostnames returns the deduplicated set of non-empty
+// listener hostnames on the Gateway, in stable encounter order, with
+// each hostname tagged L4 if any of its listeners uses a port-bound
+// protocol. The "any listener" rule is intentionally pessimistic: a
+// hostname with mixed HTTPS+TCP listeners must still be pinned to
+// one bastion, because the TCP listener can't be served from a
+// fanned-out set.
+func classifyListenerHostnames(gateway *gatewayv1.Gateway) []hostnameSpec {
+	indexByHost := make(map[string]int, len(gateway.Spec.Listeners))
+	out := make([]hostnameSpec, 0, len(gateway.Spec.Listeners))
 	for _, l := range gateway.Spec.Listeners {
 		if l.Hostname == nil || *l.Hostname == "" {
 			continue
 		}
 		h := string(*l.Hostname)
-		if seen[h] {
+		idx, ok := indexByHost[h]
+		if !ok {
+			indexByHost[h] = len(out)
+			out = append(out, hostnameSpec{Hostname: h})
+			idx = len(out) - 1
+		}
+		if isL4Protocol(l.Protocol) {
+			out[idx].L4 = true
+		}
+	}
+	return out
+}
+
+func isL4Protocol(p gatewayv1.ProtocolType) bool {
+	return p == gatewayv1.TCPProtocolType || p == gatewayv1.UDPProtocolType
+}
+
+// pickL4Bastion deterministically selects exactly one bastion ID for
+// an L4 hostname. Stability across reconciles for the same (gateway,
+// hostname) input matters: it keeps DNSRecord.spec churn-free when
+// the bastion list is unchanged, and the hash distributes different
+// hostnames across the fleet so one bastion isn't carrying every L4
+// tunnel. Returns "" when no bastion is eligible (suspended or
+// missing IP) — caller writes an empty TargetBastionIDs slice so
+// the DNSRecord surfaces "NoTargets" until a bastion comes back.
+func pickL4Bastion(bastions []weftv1alpha1.BastionInfo, gateway *gatewayv1.Gateway, hostname string) string {
+	eligible := eligibleBastionIDs(bastions)
+	if len(eligible) == 0 {
+		return ""
+	}
+	h := sha256.Sum256([]byte(fmt.Sprintf("%s/%s/%s", gateway.Namespace, gateway.Name, hostname)))
+	idx := binary.BigEndian.Uint64(h[:8]) % uint64(len(eligible))
+	return eligible[idx]
+}
+
+// eligibleBastionIDs returns the IDs of bastions that can actually
+// receive L4 traffic, in deterministic (sorted) order so the hash
+// pick in pickL4Bastion is reproducible across reconciles.
+func eligibleBastionIDs(bastions []weftv1alpha1.BastionInfo) []string {
+	out := make([]string, 0, len(bastions))
+	for _, b := range bastions {
+		if b.Suspended || b.IP == "" {
 			continue
 		}
-		seen[h] = true
-		out = append(out, h)
+		out = append(out, b.ID)
 	}
+	sort.Strings(out)
 	return out
 }
 
@@ -765,7 +848,48 @@ func (r *WeftGatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&gatewayv1.GatewayClass{},
 			handler.EnqueueRequestsFromMapFunc(r.findGatewaysForClass),
 		).
+		Watches(
+			&weftv1alpha1.AquaductTaaS{},
+			handler.EnqueueRequestsFromMapFunc(r.findGatewaysForAquaductTaaS),
+		).
 		Complete(r)
+}
+
+// findGatewaysForAquaductTaaS re-enqueues every Gateway managed by
+// this controller when the singleton AquaductTaaS changes. This is
+// what keeps L4 bastion pinning fresh: if the TaaS publishes a new
+// bastion list (added, removed, suspended), each Gateway re-runs
+// pickL4Bastion against the new list and the DNSRecord spec follows.
+// Without this, a suspended L4-pinned bastion would leave the
+// hostname pointing at a dead IP until something else triggered a
+// reconcile.
+func (r *WeftGatewayReconciler) findGatewaysForAquaductTaaS(ctx context.Context, _ client.Object) []reconcile.Request {
+	var gatewayList gatewayv1.GatewayList
+	if err := r.List(ctx, &gatewayList); err != nil {
+		return nil
+	}
+	classCache := make(map[string]bool)
+	var requests []reconcile.Request
+	for _, gw := range gatewayList.Items {
+		className := string(gw.Spec.GatewayClassName)
+		managed, cached := classCache[className]
+		if !cached {
+			var gwClass gatewayv1.GatewayClass
+			if err := r.Get(ctx, types.NamespacedName{Name: className}, &gwClass); err != nil {
+				classCache[className] = false
+				continue
+			}
+			managed = gwClass.Spec.ControllerName == ControllerName
+			classCache[className] = managed
+		}
+		if !managed {
+			continue
+		}
+		requests = append(requests, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: gw.Name, Namespace: gw.Namespace},
+		})
+	}
+	return requests
 }
 
 func (r *WeftGatewayReconciler) findGatewaysForHTTPRoute(ctx context.Context, obj client.Object) []reconcile.Request {
