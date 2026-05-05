@@ -51,6 +51,14 @@ const (
 	// would leave cloud bastions running (and billed) on aquaduct.dev.
 	finalizerName = "weft.aquaduct.dev/suspend-on-delete"
 
+	// secretFinalizerName is stamped on the access-token Secret while any
+	// AquaductTaaS still references it. It keeps users from deleting the
+	// secret out from under us — without the token, neither AquaductTaaS
+	// nor its DNSRecords can finish their cleanup paths (suspend bastions,
+	// DELETE /domain), and both end up wedged on their own finalizers.
+	// Released when the last referencing AquaductTaaS is itself deleted.
+	secretFinalizerName = "weft.aquaduct.dev/aquaducttaas-token-in-use"
+
 	// resyncInterval is how often we poll aquaduct.dev on a successful sync.
 	// Errors requeue sooner.
 	resyncInterval = 5 * time.Minute
@@ -73,7 +81,8 @@ type AquaductTaaSReconciler struct {
 //+kubebuilder:rbac:groups=weft.aquaduct.dev,resources=aquaducttaases/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=weft.aquaduct.dev,resources=aquaducttaases/finalizers,verbs=update
 //+kubebuilder:rbac:groups=weft.aquaduct.dev,resources=weftservers,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+//+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;update;patch
+//+kubebuilder:rbac:groups=weft.aquaduct.dev,resources=dnsrecords,verbs=get;list;watch;delete
 
 // Reconcile pulls the list of cloud-hosted bastions from aquaduct.dev and
 // mirrors them as External WeftServers owned by this AquaductTaaS object.
@@ -108,6 +117,16 @@ func (r *AquaductTaaSReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	token, err := r.readToken(ctx, &taas)
 	if err != nil {
 		log.Error(err, "Failed to read access token")
+		return r.failure(ctx, &taas, "SecretError", err.Error())
+	}
+
+	// Pin the secret with our in-use finalizer once we've successfully
+	// read it. Doing it here (post-readToken) means we never stamp a
+	// finalizer on the wrong secret if spec.accessTokenSecretRef points
+	// at a missing/wrong-key secret — a stuck finalizer on a stranger's
+	// secret would be much harder to recover from than a SecretError.
+	if err := r.ensureSecretFinalizer(ctx, &taas); err != nil {
+		log.Error(err, "Failed to add in-use finalizer to access-token secret")
 		return r.failure(ctx, &taas, "SecretError", err.Error())
 	}
 
@@ -258,11 +277,20 @@ func (r *AquaductTaaSReconciler) syncWeftServers(ctx context.Context, taas *weft
 	return names, nil
 }
 
-// handleDeletion suspends every bastion this AquaductTaaS manages, then drops
-// the finalizer so k8s can finish deletion. It is idempotent: if SuspendServer
-// for some server fails, the finalizer stays and the next reconcile retries
-// the whole list (SuspendServer must itself be idempotent — see APIClient
-// contract).
+// handleDeletion runs cleanup in a strict order:
+//
+//  1. Cascade-delete DNSRecords that reference this TaaS. They have their
+//     own finalizers that need our token to call DELETE /domain, so we
+//     stay around (with our finalizer attached, plus the secret finalizer
+//     pinning the token) until they're all gone.
+//  2. Suspend every managed bastion on aquaduct.dev so cloud resources
+//     stop billing.
+//  3. Release the secret's in-use finalizer (only if no other AquaductTaaS
+//     still references it) so the user's secret can be deleted.
+//  4. Drop our own finalizer.
+//
+// Idempotent: any step that fails leaves the AquaductTaaS finalizer attached
+// and surfaces an Available=False condition so the next reconcile retries.
 func (r *AquaductTaaSReconciler) handleDeletion(ctx context.Context, taas *weftv1alpha1.AquaductTaaS) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
 
@@ -284,6 +312,32 @@ func (r *AquaductTaaSReconciler) handleDeletion(ctx context.Context, taas *weftv
 		return r.failure(ctx, taas, "SecretError", err.Error())
 	}
 
+	// Step 1: cascade DNSRecords. Each one has a unregister-on-delete
+	// finalizer that calls DELETE /domain — and that call needs to read
+	// our spec/secret. Because we still hold our own finalizer, the
+	// AquaductTaaS object remains queryable until the records drain.
+	ownedDR, err := r.listOwnedDNSRecords(ctx, taas)
+	if err != nil {
+		return r.failure(ctx, taas, "SyncError", fmt.Sprintf("list owned DNSRecords: %s", err))
+	}
+	if len(ownedDR) > 0 {
+		for i := range ownedDR {
+			dr := &ownedDR[i]
+			if !dr.DeletionTimestamp.IsZero() {
+				continue
+			}
+			log.Info("Cascade-deleting DNSRecord owned by AquaductTaaS", "dnsrecord", dr.Name)
+			if err := r.Delete(ctx, dr); err != nil && !errors.IsNotFound(err) {
+				return r.failure(ctx, taas, "SyncError",
+					fmt.Sprintf("delete DNSRecord %q: %s", dr.Name, err))
+			}
+		}
+		// At least one record is still draining — wait for its finalizer
+		// to complete before we suspend bastions or release the secret.
+		return ctrl.Result{RequeueAfter: errorRetry}, nil
+	}
+
+	// Step 2: suspend bastions.
 	var owned weftv1alpha1.WeftServerList
 	if err := r.List(ctx, &owned,
 		client.InNamespace(taas.Namespace),
@@ -310,6 +364,15 @@ func (r *AquaductTaaSReconciler) handleDeletion(ctx context.Context, taas *weftv
 		log.Info("Suspended bastion on aquaduct.dev", "name", ws.Name, "id", id)
 	}
 
+	// Step 3: release the secret finalizer (if no other AquaductTaaS still
+	// uses it). Done before removing our own finalizer so a crash between
+	// the two updates doesn't leave the user's secret pinned forever.
+	if err := r.releaseSecretFinalizer(ctx, taas); err != nil {
+		log.Error(err, "Failed to release secret finalizer during deletion")
+		return r.failure(ctx, taas, "SecretError", fmt.Sprintf("release secret finalizer: %s", err))
+	}
+
+	// Step 4: drop our own finalizer.
 	controllerutil.RemoveFinalizer(taas, finalizerName)
 	if err := r.Update(ctx, taas); err != nil {
 		return ctrl.Result{}, err
@@ -317,6 +380,108 @@ func (r *AquaductTaaSReconciler) handleDeletion(ctx context.Context, taas *weftv
 	// Owned WeftServers are GC'd automatically via owner references once the
 	// apiserver finishes deleting this object.
 	return ctrl.Result{}, nil
+}
+
+// ensureSecretFinalizer stamps secretFinalizerName on the referenced
+// access-token Secret if it isn't already there. Idempotent and safe to
+// call on every reconcile. Caller must have just successfully readToken'd
+// the secret so we know it exists and has the right key.
+func (r *AquaductTaaSReconciler) ensureSecretFinalizer(ctx context.Context, taas *weftv1alpha1.AquaductTaaS) error {
+	log := log.FromContext(ctx)
+	if taas.Spec.AccessTokenSecretRef == nil {
+		return nil
+	}
+	var secret corev1.Secret
+	key := types.NamespacedName{Namespace: taas.Namespace, Name: taas.Spec.AccessTokenSecretRef.Name}
+	if err := r.Get(ctx, key, &secret); err != nil {
+		return err
+	}
+	if controllerutil.ContainsFinalizer(&secret, secretFinalizerName) {
+		return nil
+	}
+	controllerutil.AddFinalizer(&secret, secretFinalizerName)
+	if err := r.Update(ctx, &secret); err != nil {
+		return err
+	}
+	log.Info("Added in-use finalizer to access-token secret", "secret", key.String())
+	return nil
+}
+
+// releaseSecretFinalizer drops secretFinalizerName from the referenced
+// secret iff no other AquaductTaaS in the same namespace still references
+// the same secret name. Multi-TaaS-per-namespace isn't the current
+// pattern (singleton TaaS via parametersRef is the design intent), but
+// the count-and-release model means a future shift to multiple TaaSes
+// won't strand the secret as soon as one of them is deleted.
+func (r *AquaductTaaSReconciler) releaseSecretFinalizer(ctx context.Context, taas *weftv1alpha1.AquaductTaaS) error {
+	log := log.FromContext(ctx)
+	if taas.Spec.AccessTokenSecretRef == nil {
+		return nil
+	}
+	var secret corev1.Secret
+	key := types.NamespacedName{Namespace: taas.Namespace, Name: taas.Spec.AccessTokenSecretRef.Name}
+	if err := r.Get(ctx, key, &secret); err != nil {
+		if errors.IsNotFound(err) {
+			// Secret is gone (somehow — finalizer should have prevented
+			// this, but maybe it was patched off, or the AquaductTaaS
+			// was created without us ever stamping one). Nothing to do.
+			return nil
+		}
+		return err
+	}
+	if !controllerutil.ContainsFinalizer(&secret, secretFinalizerName) {
+		return nil
+	}
+
+	var taases weftv1alpha1.AquaductTaaSList
+	if err := r.List(ctx, &taases, client.InNamespace(taas.Namespace)); err != nil {
+		return fmt.Errorf("list AquaductTaaS to count secret references: %w", err)
+	}
+	for i := range taases.Items {
+		other := &taases.Items[i]
+		if other.UID == taas.UID {
+			continue
+		}
+		if !other.DeletionTimestamp.IsZero() {
+			// Also being deleted — its own handleDeletion will run the
+			// release pass too. Don't pin the finalizer on its account.
+			continue
+		}
+		if other.Spec.AccessTokenSecretRef == nil {
+			continue
+		}
+		if other.Spec.AccessTokenSecretRef.Name == secret.Name {
+			log.Info("Leaving secret finalizer in place; still referenced by another AquaductTaaS",
+				"secret", key.String(), "by", other.Name)
+			return nil
+		}
+	}
+
+	controllerutil.RemoveFinalizer(&secret, secretFinalizerName)
+	if err := r.Update(ctx, &secret); err != nil {
+		return err
+	}
+	log.Info("Released in-use finalizer on access-token secret", "secret", key.String())
+	return nil
+}
+
+// listOwnedDNSRecords returns every DNSRecord in the AquaductTaaS's
+// namespace whose spec.aquaductTaaSRef.name points at this TaaS. We
+// can't use ownerRefs because DNSRecords are stamped by other
+// reconcilers (Gateway) and we don't own them — the spec reference
+// is the source of truth for "this DNSRecord depends on this TaaS".
+func (r *AquaductTaaSReconciler) listOwnedDNSRecords(ctx context.Context, taas *weftv1alpha1.AquaductTaaS) ([]weftv1alpha1.DNSRecord, error) {
+	var all weftv1alpha1.DNSRecordList
+	if err := r.List(ctx, &all, client.InNamespace(taas.Namespace)); err != nil {
+		return nil, err
+	}
+	owned := make([]weftv1alpha1.DNSRecord, 0, len(all.Items))
+	for i := range all.Items {
+		if all.Items[i].Spec.AquaductTaaSRef.Name == taas.Name {
+			owned = append(owned, all.Items[i])
+		}
+	}
+	return owned, nil
 }
 
 // failure records an Available=False condition with the given reason/message

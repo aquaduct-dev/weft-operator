@@ -622,6 +622,162 @@ var _ = Describe("AquaductTaaS Controller", func() {
 		}, timeout, interval).Should(BeTrue())
 	})
 
+	It("Stamps the in-use finalizer on the access-token secret after a successful reconcile", func(ctx context.Context) {
+		// The user could otherwise `kubectl delete secret` mid-flight,
+		// which would wedge handleDeletion (no token = no SuspendServer).
+		createSecret(ctx, "token", "tok")
+		createTaaS(ctx, &corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+			Key:                  "token",
+		})
+		mock.setList(func(ctx context.Context, token string) ([]aquaducttaas.ExternalServer, error) {
+			return nil, nil
+		})
+
+		_, err := reconcile(ctx, newReconciler())
+		Expect(err).NotTo(HaveOccurred())
+
+		var secret corev1.Secret
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: secretName, Namespace: "default"}, &secret)).To(Succeed())
+		Expect(secret.Finalizers).To(ContainElement("weft.aquaduct.dev/aquaducttaas-token-in-use"))
+	})
+
+	It("Releases the secret finalizer when the AquaductTaaS is deleted", func(ctx context.Context) {
+		createSecret(ctx, "token", "tok")
+		createTaaS(ctx, &corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+			Key:                  "token",
+		})
+		mock.setList(func(ctx context.Context, token string) ([]aquaducttaas.ExternalServer, error) {
+			return nil, nil
+		})
+		r := newReconciler()
+		_, err := reconcile(ctx, r)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(k8sClient.Delete(ctx, getTaaS(ctx))).To(Succeed())
+		_, err = reconcile(ctx, r)
+		Expect(err).NotTo(HaveOccurred())
+
+		Eventually(func() bool {
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: taasName, Namespace: "default"}, &weftv1alpha1.AquaductTaaS{})
+			return k8serrors.IsNotFound(err)
+		}, timeout, interval).Should(BeTrue())
+
+		By("Once the TaaS is gone the secret has no in-use finalizer left")
+		var secret corev1.Secret
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: secretName, Namespace: "default"}, &secret)).To(Succeed())
+		Expect(secret.Finalizers).NotTo(ContainElement("weft.aquaduct.dev/aquaducttaas-token-in-use"),
+			"with no AquaductTaaS still referencing the secret, the in-use finalizer must be released")
+	})
+
+	It("Keeps the secret finalizer in place when another AquaductTaaS still references the same secret", func(ctx context.Context) {
+		createSecret(ctx, "token", "tok")
+		createTaaS(ctx, &corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+			Key:                  "token",
+		})
+		mock.setList(func(ctx context.Context, token string) ([]aquaducttaas.ExternalServer, error) {
+			return nil, nil
+		})
+		r := newReconciler()
+		_, err := reconcile(ctx, r)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("Creating a sibling AquaductTaaS that shares the same secret")
+		siblingName := "taas-sibling-" + randomSuffix()
+		sibling := &weftv1alpha1.AquaductTaaS{
+			ObjectMeta: metav1.ObjectMeta{Name: siblingName, Namespace: "default"},
+			Spec: weftv1alpha1.AquaductTaaSSpec{AccessTokenSecretRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+				Key:                  "token",
+			}},
+		}
+		Expect(k8sClient.Create(ctx, sibling)).To(Succeed())
+
+		By("Deleting the first TaaS — sibling still alive, finalizer must remain")
+		Expect(k8sClient.Delete(ctx, getTaaS(ctx))).To(Succeed())
+		_, err = reconcile(ctx, r)
+		Expect(err).NotTo(HaveOccurred())
+
+		var secret corev1.Secret
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: secretName, Namespace: "default"}, &secret)).To(Succeed())
+		Expect(secret.Finalizers).To(ContainElement("weft.aquaduct.dev/aquaducttaas-token-in-use"),
+			"finalizer must stay until the LAST referencing TaaS is gone — otherwise the sibling would lose its token mid-flight")
+	})
+
+	It("Cascade-deletes DNSRecords that reference the TaaS before suspending bastions", func(ctx context.Context) {
+		createSecret(ctx, "token", "tok")
+		createTaaS(ctx, &corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+			Key:                  "token",
+		})
+		id := "id-" + randomSuffix()
+		srv := "bastion-" + randomSuffix()
+		mock.setList(func(ctx context.Context, token string) ([]aquaducttaas.ExternalServer, error) {
+			return []aquaducttaas.ExternalServer{
+				{ID: id, Name: srv, IP: "1.1.1.1", ConnectionString: "weft://x@1.1.1.1:80"},
+			}, nil
+		})
+		r := newReconciler()
+		_, err := reconcile(ctx, r)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("Stamping a DNSRecord that references this TaaS — simulates what WeftGateway would do")
+		drName := "dnsrecord-" + randomSuffix()
+		dr := &weftv1alpha1.DNSRecord{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      drName,
+				Namespace: "default",
+				// Stand in for the real DNSRecord reconciler's
+				// unregister-on-delete finalizer, which isn't running in
+				// this suite. Without it our Delete call would just
+				// remove the object and we couldn't observe the
+				// "cascade fires but suspend hasn't yet" intermediate
+				// state — which is the whole point of the ordering.
+				Finalizers: []string{"test/hold"},
+			},
+			Spec: weftv1alpha1.DNSRecordSpec{
+				DomainName:      drName + ".example.com",
+				AquaductTaaSRef: corev1.LocalObjectReference{Name: taasName},
+			},
+		}
+		Expect(k8sClient.Create(ctx, dr)).To(Succeed())
+
+		By("Deleting the TaaS")
+		Expect(k8sClient.Delete(ctx, getTaaS(ctx))).To(Succeed())
+
+		By("First reconcile after delete: DNSRecord cascade fires, suspend is NOT yet called")
+		_, err = reconcile(ctx, r)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(mock.Suspends).To(BeEmpty(),
+			"step 1 (DNSRecord cascade) must run before step 2 (suspend) — otherwise the DNSRecord finalizer can't reach the API and wedges")
+
+		By("DNSRecord now has DeletionTimestamp but is held by its finalizer")
+		var got weftv1alpha1.DNSRecord
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: drName, Namespace: "default"}, &got)).To(Succeed())
+		Expect(got.DeletionTimestamp).NotTo(BeNil())
+
+		By("Releasing the placeholder finalizer to let the record actually delete")
+		got.Finalizers = nil
+		Expect(k8sClient.Update(ctx, &got)).To(Succeed())
+		Eventually(func() bool {
+			return k8serrors.IsNotFound(
+				k8sClient.Get(ctx, types.NamespacedName{Name: drName, Namespace: "default"}, &weftv1alpha1.DNSRecord{}),
+			)
+		}, timeout, interval).Should(BeTrue())
+
+		By("Second reconcile: records are gone, suspend now runs and the TaaS finalizer is released")
+		_, err = reconcile(ctx, r)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(mock.Suspends).To(ConsistOf(id))
+
+		Eventually(func() bool {
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: taasName, Namespace: "default"}, &weftv1alpha1.AquaductTaaS{})
+			return k8serrors.IsNotFound(err)
+		}, timeout, interval).Should(BeTrue())
+	})
+
 	It("Fails with ConfigError when APIClient is nil", func(ctx context.Context) {
 		createSecret(ctx, "token", "tok")
 		createTaaS(ctx, &corev1.SecretKeySelector{
