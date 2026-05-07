@@ -145,16 +145,17 @@ func (r *DNSRecordReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 	dr.Status.ExpectedIPs = expectedIPs
 
-	// Body field for PUT/PATCH. With spec.targetBastionIDs unset (and
-	// thus targetBastionIDs == nil), we send no bastion_ids field —
-	// server falls through to "fan out to all". With it explicitly set
-	// (even to []), we send the field and the server applies exactly
-	// that set. This matches the server's tri-state PATCH semantics.
-	var bastionIDsForBody *[]string
-	if dr.Spec.TargetBastionIDs != nil {
-		ids := append([]string(nil), targetBastionIDs...)
-		bastionIDsForBody = &ids
-	}
+	// Body field for PUT/PATCH: always send the materialized list from
+	// selectBastions. When spec.targetBastionIDs is unset, that list is
+	// already "all non-suspended bastions" — the same set the server
+	// would pick from its omitted-field default, but explicit. We send
+	// it explicitly because the server's PATCH treats an omitted
+	// bastion_ids as "leave the existing set unchanged", so a
+	// newly-added bastion would never propagate without a re-PUT.
+	// Sending the full list every time makes PATCH idempotently
+	// converge on AquaductTaaS.status.bastions.
+	ids := append([]string(nil), targetBastionIDs...)
+	bastionIDsForBody := &ids
 
 	// PUT/PATCH and surface the outcome on `Registered`. Mid-loop we
 	// also stash patchForeign so the post-lookup logic can rewrite the
