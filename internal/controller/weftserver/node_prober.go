@@ -176,8 +176,8 @@ func (p *NodeProber) processNode(ctx context.Context, node *corev1.Node) error {
 
 	// Create Probe Job
 	jobName := fmt.Sprintf("weft-probe-%s-%s", node.Name, randString(4))
-	ttl := int32(3600)
-	backoff := int32(9)
+	ttl := int32(1800)
+	backoff := int32(0)
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      jobName,
