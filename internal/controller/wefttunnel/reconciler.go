@@ -155,6 +155,7 @@ func (r *WeftTunnelReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 				MatchLabels: labels,
 			}
 			dep.Spec.Replicas = int32Ptr(1)
+			dep.Spec.MinReadySeconds = 15
 			dep.Spec.Template.ObjectMeta.Labels = labels
 			dep.Spec.Strategy.Type = appsv1.RecreateDeploymentStrategyType
 			dep.Spec.Template.Spec.Containers = []corev1.Container{
@@ -227,7 +228,7 @@ func (r *WeftTunnelReconciler) updateStatus(ctx context.Context, weftTunnel *wef
 		allReady = false
 	}
 	for _, d := range depList.Items {
-		if d.Status.AvailableReplicas == 0 {
+		if d.Status.ReadyReplicas == 0 {
 			allReady = false
 			break
 		}
