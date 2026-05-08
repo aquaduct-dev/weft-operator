@@ -281,30 +281,46 @@ func (r *WeftTunnelReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// findTunnelsForServer returns a list of requests for WeftTunnels that target the given WeftServer
+// findTunnelsForServer returns a list of requests for WeftTunnels that
+// target the given WeftServer. The matching logic mirrors Reconcile: a
+// weft-system WeftServer is a target for every empty-TargetServers tunnel
+// in any namespace (because Reconcile pulls weft-system servers in on top
+// of same-namespace ones), while a WeftServer in any other namespace only
+// matches tunnels co-located with it. Explicit TargetServers always
+// resolve within the tunnel's own namespace, so cross-namespace servers
+// never match that path.
 func (r *WeftTunnelReconciler) findTunnelsForServer(ctx context.Context, obj client.Object) []reconcile.Request {
 	server, ok := obj.(*weftv1alpha1.WeftServer)
 	if !ok {
 		return nil
 	}
 
+	var listOpts []client.ListOption
+	if server.Namespace != "weft-system" {
+		listOpts = append(listOpts, client.InNamespace(server.Namespace))
+	}
+
 	var tunnelList weftv1alpha1.WeftTunnelList
-	if err := r.List(ctx, &tunnelList, client.InNamespace(server.Namespace)); err != nil {
+	if err := r.List(ctx, &tunnelList, listOpts...); err != nil {
 		return nil
 	}
 
 	var requests []reconcile.Request
 	for _, tunnel := range tunnelList.Items {
-		match := len(tunnel.Spec.TargetServers) == 0 || slices.Contains(tunnel.Spec.TargetServers, server.Name)
-
-		if match {
-			requests = append(requests, reconcile.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      tunnel.Name,
-					Namespace: tunnel.Namespace,
-				},
-			})
+		if len(tunnel.Spec.TargetServers) > 0 {
+			if tunnel.Namespace != server.Namespace {
+				continue
+			}
+			if !slices.Contains(tunnel.Spec.TargetServers, server.Name) {
+				continue
+			}
 		}
+		requests = append(requests, reconcile.Request{
+			NamespacedName: types.NamespacedName{
+				Name:      tunnel.Name,
+				Namespace: tunnel.Namespace,
+			},
+		})
 	}
 	return requests
 }
