@@ -31,18 +31,18 @@ import (
 	"aquaduct.dev/weft-operator/internal/controller/aquaducttaas"
 )
 
-// These tests pin the HTTPAPIClient to the aquaduct.dev API contract:
-//   POST  /api/auth/token-exchange    Exchange access token (body) for a JWT
-//   GET   /api/bastion                List bastions (JWT Bearer)
-//   PATCH /api/bastion/{id}           Update a bastion (JWT Bearer)
+// These tests pin the HTTPAPIClient to the contract:
+//   POST  {authz}/api/auth/access-token   Exchange access token (Bearer) for a JWT
+//   GET   {aquaduct}/api/bastion          List bastions (JWT Bearer)
+//   PATCH {aquaduct}/api/bastion/{id}     Update a bastion (JWT Bearer)
 //
-// The long-lived aqt_-prefixed token is NOT accepted by /api/bastion
-// directly — the bastion endpoints require a JWT. HTTPAPIClient performs the
-// exchange and caches the JWT in memory, re-minting it on a 401 so rotation
-// heals automatically.
+// The long-lived access token is NOT accepted by /api/bastion directly — the
+// bastion endpoints require a JWT. HTTPAPIClient exchanges the access token at
+// authz, caches the JWT in memory, and re-mints it on a 401 so rotation heals
+// automatically. (The mock serves both roles on one server.)
 
 // mockAquaductServer builds an httptest.Server that models the two-hop flow:
-// /api/auth/token-exchange accepts the access token in a JSON body and
+// /api/auth/access-token accepts the access token as a Bearer credential and
 // returns a JWT, and the bastion endpoints only accept that JWT. Fields
 // capture what the last request looked like so assertions can check headers
 // and paths.
@@ -66,24 +66,18 @@ func newMockAquaductServer(accessToken, jwt string) *mockAquaductServer {
 	m := &mockAquaductServer{accessToken: accessToken, jwt: jwt}
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/api/auth/token-exchange", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/auth/access-token", func(w http.ResponseWriter, r *http.Request) {
 		m.loginCount.Add(1)
 		if r.Method != http.MethodPost {
 			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 			return
 		}
-		var body struct {
-			Token string `json:"token"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			http.Error(w, `{"error":"bad body"}`, http.StatusBadRequest)
-			return
-		}
-		if body.Token != m.accessToken {
+		// authz takes the long-lived access token as a Bearer credential.
+		if r.Header.Get("Authorization") != "Bearer "+m.accessToken {
 			http.Error(w, `{"error":"invalid access token"}`, http.StatusUnauthorized)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"token": m.jwt, "expires_in": 3600})
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": m.jwt, "token": m.jwt, "expires_in": 3600})
 	})
 
 	mux.HandleFunc("/api/bastion", func(w http.ResponseWriter, r *http.Request) {
@@ -118,11 +112,11 @@ func newMockAquaductServer(accessToken, jwt string) *mockAquaductServer {
 }
 
 var _ = Describe("HTTPAPIClient", func() {
-	It("Exchanges the access token at /api/auth/token-exchange, then lists bastions with the JWT", func(ctx context.Context) {
+	It("Exchanges the access token at /api/auth/access-token, then lists bastions with the JWT", func(ctx context.Context) {
 		m := newMockAquaductServer("access-token", "signed.jwt.here")
 		defer m.Close()
 
-		client := aquaducttaas.NewHTTPAPIClient(m.URL)
+		client := aquaducttaas.NewHTTPAPIClient(m.URL, m.URL)
 		servers, err := client.ListExternalServers(ctx, "access-token")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(servers).To(HaveLen(1))
@@ -142,7 +136,7 @@ var _ = Describe("HTTPAPIClient", func() {
 		m := newMockAquaductServer("access-token", "jwt-1")
 		defer m.Close()
 
-		client := aquaducttaas.NewHTTPAPIClient(m.URL)
+		client := aquaducttaas.NewHTTPAPIClient(m.URL, m.URL)
 		nowVal := time.Unix(1700000000, 0)
 		client.Now = func() time.Time { return nowVal }
 
@@ -166,7 +160,7 @@ var _ = Describe("HTTPAPIClient", func() {
 		m := newMockAquaductServer("access-token", "jwt-v2")
 		defer m.Close()
 
-		client := aquaducttaas.NewHTTPAPIClient(m.URL)
+		client := aquaducttaas.NewHTTPAPIClient(m.URL, m.URL)
 
 		By("Priming the cache with an expired JWT that the server will reject")
 		// We reach into the client via a pair of real calls: first seed the
@@ -190,9 +184,9 @@ var _ = Describe("HTTPAPIClient", func() {
 		}))
 		defer srv.Close()
 
-		_, err := aquaducttaas.NewHTTPAPIClient(srv.URL).ListExternalServers(ctx, "bogus")
+		_, err := aquaducttaas.NewHTTPAPIClient(srv.URL, srv.URL).ListExternalServers(ctx, "bogus")
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("/auth/token-exchange"))
+		Expect(err.Error()).To(ContainSubstring("/auth/access-token"))
 		Expect(err.Error()).To(ContainSubstring("401"))
 	})
 
@@ -203,7 +197,7 @@ var _ = Describe("HTTPAPIClient", func() {
 		}
 		defer m.Close()
 
-		_, err := aquaducttaas.NewHTTPAPIClient(m.URL).ListExternalServers(ctx, "tok")
+		_, err := aquaducttaas.NewHTTPAPIClient(m.URL, m.URL).ListExternalServers(ctx, "tok")
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("500"))
 	})
@@ -215,12 +209,12 @@ var _ = Describe("HTTPAPIClient", func() {
 		}
 		defer m.Close()
 
-		_, err := aquaducttaas.NewHTTPAPIClient(m.URL).ListExternalServers(ctx, "tok")
+		_, err := aquaducttaas.NewHTTPAPIClient(m.URL, m.URL).ListExternalServers(ctx, "tok")
 		Expect(err).To(HaveOccurred())
 	})
 
 	It("Falls back to the default endpoint when none is provided", func() {
-		client := aquaducttaas.NewHTTPAPIClient("")
+		client := aquaducttaas.NewHTTPAPIClient("", "")
 		Expect(client.Endpoint).To(Equal(aquaducttaas.DefaultAPIEndpoint))
 	})
 
@@ -239,7 +233,7 @@ var _ = Describe("HTTPAPIClient", func() {
 		}
 		defer m.Close()
 
-		err := aquaducttaas.NewHTTPAPIClient(m.URL).SuspendServer(ctx, "tok", "uuid-1")
+		err := aquaducttaas.NewHTTPAPIClient(m.URL, m.URL).SuspendServer(ctx, "tok", "uuid-1")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(gotMethod).To(Equal(http.MethodPatch))
 		Expect(gotPath).To(Equal("/api/bastion/uuid-1"))
@@ -254,7 +248,7 @@ var _ = Describe("HTTPAPIClient", func() {
 		}
 		defer m.Close()
 
-		err := aquaducttaas.NewHTTPAPIClient(m.URL).SuspendServer(ctx, "tok", "uuid-missing")
+		err := aquaducttaas.NewHTTPAPIClient(m.URL, m.URL).SuspendServer(ctx, "tok", "uuid-missing")
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("404"))
 		Expect(err.Error()).To(ContainSubstring("uuid-missing"))

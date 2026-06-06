@@ -29,8 +29,12 @@ import (
 // materializes any cloud-hosted bastions as WeftServer objects with
 // Location=External so the rest of the operator can treat them uniformly.
 type AquaductTaaSSpec struct {
-	// AccessTokenSecretRef references a Secret that contains the long-lived
-	// access token for aquaduct.dev.
+	// AccessTokenSecretRef references a Secret holding the long-lived authz
+	// access token (created under authz "My Identity → Long-Lived Tokens",
+	// scoped to aquaduct.use). The operator exchanges it at
+	// {AUTHZ_ENDPOINT}/api/auth/access-token for a short-lived JWT and uses
+	// that JWT against the aquaduct.dev API. AUTHZ_ENDPOINT is operator-level
+	// config (env on the Deployment), defaulting to https://authz.aquaduct.dev.
 	AccessTokenSecretRef *corev1.SecretKeySelector `json:"accessTokenSecretRef,omitempty"`
 
 	// APIEndpoint optionally overrides the aquaduct.dev API endpoint.

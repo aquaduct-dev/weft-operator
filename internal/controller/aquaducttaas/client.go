@@ -35,6 +35,12 @@ const (
 	DefaultAPIEndpoint = "https://aquaduct.dev"
 	apiBasePath        = "/api"
 
+	// DefaultAuthzEndpoint is the authz issuer that exchanges the long-lived
+	// access token for a short-lived user JWT. Overridable via AUTHZ_ENDPOINT
+	// on the operator Deployment. aquaduct.dev's API accepts authz-issued JWTs
+	// (its oidcrp verifier points at this issuer).
+	DefaultAuthzEndpoint = "https://authz.aquaduct.dev"
+
 	// defaultBastionPort is appended when we build the weft:// connection
 	// string from the IP + connection_secret fields aquaduct.dev returns.
 	// The OpenAPI spec doesn't expose a port; 9092 matches the fallback in
@@ -105,7 +111,11 @@ type APIClient interface {
 // self-healing).
 type HTTPAPIClient struct {
 	Endpoint string
-	HTTP     *http.Client
+	// AuthzEndpoint is where the long-lived access token is exchanged for a
+	// short-lived user JWT (authz's /api/auth/access-token). Defaults to
+	// DefaultAuthzEndpoint.
+	AuthzEndpoint string
+	HTTP          *http.Client
 
 	// Now is the clock used to evaluate JWT expiry. Defaults to time.Now.
 	// Tests override this to exercise the expiry-refresh path without sleeping.
@@ -123,17 +133,21 @@ type cachedJWT struct {
 	expiresAt time.Time
 }
 
-// NewHTTPAPIClient constructs an HTTPAPIClient with sensible defaults. If
-// endpoint is empty, DefaultAPIEndpoint is used.
-func NewHTTPAPIClient(endpoint string) *HTTPAPIClient {
+// NewHTTPAPIClient constructs an HTTPAPIClient with sensible defaults. Empty
+// endpoint/authzEndpoint fall back to DefaultAPIEndpoint / DefaultAuthzEndpoint.
+func NewHTTPAPIClient(endpoint, authzEndpoint string) *HTTPAPIClient {
 	if endpoint == "" {
 		endpoint = DefaultAPIEndpoint
 	}
+	if authzEndpoint == "" {
+		authzEndpoint = DefaultAuthzEndpoint
+	}
 	return &HTTPAPIClient{
-		Endpoint: endpoint,
-		HTTP:     http.DefaultClient,
-		Now:      time.Now,
-		jwts:     map[string]cachedJWT{},
+		Endpoint:      endpoint,
+		AuthzEndpoint: authzEndpoint,
+		HTTP:          http.DefaultClient,
+		Now:           time.Now,
+		jwts:          map[string]cachedJWT{},
 	}
 }
 
@@ -154,27 +168,26 @@ type apiBastion struct {
 	Suspended        bool   `json:"suspended"`
 }
 
-// exchangeResponse matches tokens.ExchangeTokenResponse in the server code.
+// exchangeResponse matches authz's exchangeAccessTokenResponse. authz returns
+// both `access_token` and a `token` alias; we read either.
 type exchangeResponse struct {
-	Token     string `json:"token"`
-	ExpiresIn int    `json:"expires_in"`
+	AccessToken string `json:"access_token"`
+	Token       string `json:"token"`
+	ExpiresIn   int    `json:"expires_in"`
 }
 
-// login exchanges a long-lived aqt_-prefixed access token for a short-lived
-// JWT via POST /api/auth/token-exchange. The /login handler only supports
-// email+password despite what the spec suggests, so this dedicated endpoint
-// is what actually validates API tokens. Returns the JWT and the time at
-// which the caller should treat it as stale (expires_in minus a grace period).
+// login exchanges a long-lived authz access token for a short-lived user JWT
+// via POST {AuthzEndpoint}/api/auth/access-token. The access token is presented
+// as a Bearer credential; authz validates it against its token store and mints
+// a JWT carrying the token's pinned scopes. aquaduct.dev's API accepts that JWT
+// (its oidcrp verifier trusts the authz issuer). Returns the JWT and the time
+// at which the caller should treat it as stale (expires_in minus a grace period).
 func (c *HTTPAPIClient) login(ctx context.Context, accessToken string) (string, time.Time, error) {
-	body, err := json.Marshal(map[string]string{"token": accessToken})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.AuthzEndpoint+apiBasePath+"/auth/access-token", nil)
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.Endpoint+apiBasePath+"/auth/token-exchange", bytes.NewReader(body))
-	if err != nil {
-		return "", time.Time{}, err
-	}
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.HTTP.Do(req)
@@ -184,14 +197,17 @@ func (c *HTTPAPIClient) login(ctx context.Context, accessToken string) (string, 
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(resp.Body)
-		return "", time.Time{}, fmt.Errorf("aquaduct.dev /auth/token-exchange returned %d: %s", resp.StatusCode, string(respBody))
+		return "", time.Time{}, fmt.Errorf("authz /auth/access-token returned %d: %s", resp.StatusCode, string(respBody))
 	}
 	var er exchangeResponse
 	if err := json.NewDecoder(resp.Body).Decode(&er); err != nil {
 		return "", time.Time{}, fmt.Errorf("decode exchange response: %w", err)
 	}
 	if er.Token == "" {
-		return "", time.Time{}, fmt.Errorf("aquaduct.dev /auth/token-exchange returned empty token")
+		er.Token = er.AccessToken
+	}
+	if er.Token == "" {
+		return "", time.Time{}, fmt.Errorf("authz /auth/access-token returned empty token")
 	}
 
 	// A missing / zero / negative expires_in would mean "never expires" — we

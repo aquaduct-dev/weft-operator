@@ -138,7 +138,9 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "WeftTunnel")
 		os.Exit(1)
 	}
-	taasAPIClient := aquaducttaas.NewHTTPAPIClient("")
+	// AUTHZ_ENDPOINT overrides where the long-lived access token is exchanged
+	// for a short-lived JWT (default https://authz.aquaduct.dev).
+	taasAPIClient := aquaducttaas.NewHTTPAPIClient("", os.Getenv("AUTHZ_ENDPOINT"))
 	if err := (&aquaducttaas.AquaductTaaSReconciler{
 		Client:    mgr.GetClient(),
 		Scheme:    mgr.GetScheme(),
