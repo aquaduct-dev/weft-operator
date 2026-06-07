@@ -15,7 +15,7 @@ helm_chart(
     registry_url = "oci://ghcr.io/aquaduct-dev/charts",
     templates = [
         "//chart/templates:deployment.yaml",
-        "//chart/templates:honeypot.yaml",
+        "//chart/templates:honeypot-secret.yaml",
         "//chart/templates:rolebinding.yaml",
         "//chart/templates:role.yaml",
         "//chart/templates:serviceaccount.yaml",
