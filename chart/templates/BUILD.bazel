@@ -8,6 +8,7 @@ genrule(
 
 exports_files([
     "deployment.yaml",
+    "honeypot.yaml",
     "rolebinding.yaml",
     "serviceaccount.yaml",
     "_helpers.tpl",

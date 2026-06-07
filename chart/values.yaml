@@ -45,6 +45,68 @@ tolerations: []
 
 affinity: {}
 
+# Honeypot — optional standalone listener deployed alongside the operator.
+# Binds common abused ports (SSH/HTTP/HTTPS plus classic banner-grab targets),
+# proceeds through each protocol's handshake far enough to capture useful
+# detail (SSH username/password, HTTP method/path/host/UA, TLS SNI), and
+# emits one structured event per attempt. Events go to the pod's stdout log
+# and (if `honeypot.ingest.url` is set) are POSTed to a remote ingest
+# endpoint such as aquaduct.dev's /api/darkforest/ingest.
+#
+# Conflict warning: the honeypot binds privileged ports (80, 443, 22, …).
+# Scheduling it on a node that already runs a weft-server (which binds the
+# same ports) will cause one of them to fail. Pin the honeypot to a node
+# without a weft-server via `honeypot.nodeSelector`.
+honeypot:
+  enabled: false
+
+  image:
+    repository: ghcr.io/aquaduct-dev/weft
+    tag: latest
+    pullPolicy: Always
+
+  # bindIP forwards to `weft honeypot --bind-ip`. Empty falls back to the
+  # binary's public-IP discovery (queries ip.hetzner.com).
+  bindIP: ""
+
+  # Comma-separated TCP ports. Defaults overlap with the protocol-aware
+  # handlers (22/2222 → SSH, 80 → HTTP, 443 → HTTPS) plus banner-grab
+  # targets that just record a port_scan event with the first 256B banner.
+  ports: "22,2222,80,443,21,23,445,3306,3389,5432,6379"
+
+  # `dst_host` label sent with each emitted event. Empty → pod hostname.
+  dstHost: ""
+
+  ingest:
+    # Remote URL to POST each captured event to, e.g.
+    #   https://aquaduct.dev/api/darkforest/ingest
+    # Empty disables remote ingest (events stay in stdout only).
+    url: ""
+    # Secret holding the X-Darkforest-Secret value. Mounted via
+    # $WEFT_HONEYPOT_INGEST_SECRET. Leave name empty if no ingest URL.
+    secretRef:
+      name: ""
+      key: secret
+
+  # hostNetwork is the v1 deploy norm — the pod inherits the node's
+  # public IP and privileged ports map directly to internet sockets.
+  hostNetwork: true
+
+  # Scheduling: no default constraints. Production should pin to a
+  # dedicated honeypot node (no weft-server pods on it) via nodeSelector,
+  # otherwise the honeypot's 80/443 binds will collide.
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
 # GatewayClass managed by this chart. Users point their Gateway objects at
 # .Values.gatewayClass.name to route traffic through the weft operator.
 gatewayClass:
