@@ -77,6 +77,57 @@ otherwise generates a 32-char random string on first install.
 {{- end -}}
 
 {{/*
+Whether to render the bundled VPA controller stack (CRDs, RBAC, recommender,
+updater, admission-controller, webhook). Outputs "true" or "".
+
+  verticalPodAutoscaler.installController:
+    auto  (default) — install only if the cluster has no VPA API yet, OR we
+                      already own the install (our vpa-recommender Deployment
+                      exists in this namespace). The ownership check keeps the
+                      stack rendered across upgrades after the Capabilities probe
+                      flips to "present", so Helm keeps managing it instead of
+                      deleting it.
+    true            — always render/manage it.
+    false           — never (you run VPA yourself).
+*/}}
+{{- define "weft-operator.installVpaController" -}}
+{{- if .Values.verticalPodAutoscaler.enabled -}}
+{{- $mode := .Values.verticalPodAutoscaler.installController -}}
+{{- if kindIs "bool" $mode -}}
+{{- if $mode }}true{{ end -}}
+{{- else if eq (lower (toString $mode)) "auto" -}}
+{{- $apiPresent := .Capabilities.APIVersions.Has "autoscaling.k8s.io/v1/VerticalPodAutoscaler" -}}
+{{- $weOwn := not (empty (lookup "apps/v1" "Deployment" .Release.Namespace "vpa-recommender")) -}}
+{{- if or (not $apiPresent) $weOwn }}true{{ end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+VPA admission webhook serving cert (base64 Secret data: caCert.pem / serverCert.pem
+/ serverKey.pem). Reuses an existing in-cluster vpa-tls-certs Secret when present so
+the CA stays stable across upgrades; mints a fresh self-signed CA + serving cert for
+vpa-webhook.<ns>.svc otherwise.
+*/}}
+{{- define "weft-operator.vpaTlsCerts" -}}
+{{- $existing := (lookup "v1" "Secret" .Release.Namespace "vpa-tls-certs") -}}
+{{- if and $existing $existing.data (index $existing.data "serverCert.pem") -}}
+caCert.pem: {{ index $existing.data "caCert.pem" }}
+serverCert.pem: {{ index $existing.data "serverCert.pem" }}
+serverKey.pem: {{ index $existing.data "serverKey.pem" }}
+{{- else -}}
+{{- $ns := .Release.Namespace -}}
+{{- $cn := printf "vpa-webhook.%s.svc" $ns -}}
+{{- $altNames := list $cn (printf "vpa-webhook.%s.svc.cluster.local" $ns) "vpa-webhook" -}}
+{{- $ca := genCA "vpa-webhook-ca" 3650 -}}
+{{- $cert := genSignedCert $cn nil $altNames 3650 $ca -}}
+caCert.pem: {{ $ca.Cert | b64enc }}
+serverCert.pem: {{ $cert.Cert | b64enc }}
+serverKey.pem: {{ $cert.Key | b64enc }}
+{{- end -}}
+{{- end -}}
+
+{{/*
 Create the name of the service account to use
 */}}
 {{- define "weft-operator.serviceAccountName" -}}

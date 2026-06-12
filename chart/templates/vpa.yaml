@@ -1,0 +1,34 @@
+# VerticalPodAutoscaler for weft-operator itself. Manages MEMORY only — CPU stays
+# at the static request/limit from .Values.resources. updateMode: Auto lets the
+# updater evict+recreate the (single) operator pod so the admission-controller can
+# inject the recommended memory, ending the OOM/restart loop.
+#
+# Gated on the autoscaling.k8s.io/v1 API being registered: on a cluster that starts
+# without VPA, the first `helm upgrade` lays down the controller stack (which
+# installs the CRD) and this object is skipped; the next `helm upgrade` sees the API
+# and attaches it. This avoids the "no matches for kind VerticalPodAutoscaler"
+# same-release CRD/CR ordering error.
+{{- if and .Values.verticalPodAutoscaler.enabled (.Capabilities.APIVersions.Has "autoscaling.k8s.io/v1/VerticalPodAutoscaler") }}
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: {{ include "weft-operator.fullname" . }}
+  labels:
+    {{- include "weft-operator.labels" . | nindent 4 }}
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "weft-operator.fullname" . }}
+  updatePolicy:
+    updateMode: {{ .Values.verticalPodAutoscaler.updateMode | quote }}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: {{ .Chart.Name }}
+        controlledResources: ["memory"]
+        controlledValues: RequestsAndLimits
+        minAllowed:
+          memory: {{ .Values.verticalPodAutoscaler.minAllowedMemory }}
+        maxAllowed:
+          memory: {{ .Values.verticalPodAutoscaler.maxAllowedMemory }}
+{{- end }}

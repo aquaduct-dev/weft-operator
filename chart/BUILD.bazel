@@ -21,6 +21,11 @@ helm_chart(
         "//chart/templates:serviceaccount.yaml",
         "//chart/templates:_helpers.tpl",
         "//chart/templates:gatewayclass.yaml",
+        "//chart/templates:vpa.yaml",
+        "//chart/templates:vpa-crd.yaml",
+        "//chart/templates:vpa-rbac.yaml",
+        "//chart/templates:vpa-controllers.yaml",
+        "//chart/templates:vpa-certs.yaml",
         "//api/v1alpha1:generated.crds",
     ],
     upgrade_opts = [

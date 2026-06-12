@@ -1,0 +1,183 @@
+# VPA controller Deployments + webhook Service, vendored from
+# vertical-pod-autoscaler-1.7.0 (deploy/{recommender,updater,admission-controller}
+# -deployment.yaml + admission-controller-service.yaml). Namespace, images, and the
+# updater --min-replicas are templated; everything else (securityContext, probes,
+# ports, upstream resource requests) is kept verbatim. Rendered only when this chart
+# is bootstrapping VPA — see the installVpaController helper.
+{{- if eq (include "weft-operator.installVpaController" .) "true" }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vpa-recommender
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vpa-recommender
+  template:
+    metadata:
+      labels:
+        app: vpa-recommender
+        app.kubernetes.io/component: recommender
+        app.kubernetes.io/name: vertical-pod-autoscaler
+    spec:
+      serviceAccountName: vpa-recommender
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534 # nobody
+      containers:
+      - name: recommender
+        image: {{ .Values.verticalPodAutoscaler.images.recommender | quote }}
+        imagePullPolicy: IfNotPresent
+        resources:
+          {{- toYaml .Values.verticalPodAutoscaler.resources.recommender | nindent 10 }}
+        ports:
+        - name: prometheus
+          containerPort: 8942
+        livenessProbe:
+          httpGet:
+            path: /health-check
+            port: prometheus
+            scheme: HTTP
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health-check
+            port: prometheus
+            scheme: HTTP
+          periodSeconds: 10
+          failureThreshold: 3
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vpa-updater
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vpa-updater
+  template:
+    metadata:
+      labels:
+        app: vpa-updater
+    spec:
+      serviceAccountName: vpa-updater
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534 # nobody
+      containers:
+        - name: updater
+          image: {{ .Values.verticalPodAutoscaler.images.updater | quote }}
+          imagePullPolicy: IfNotPresent
+          # --min-replicas defaults to 2 upstream, which makes the updater skip
+          # single-replica targets (it won't evict the only pod). weft-operator
+          # runs 1 leader-elected replica, so this must be 1 for updateMode: Auto
+          # to actually resize it. This is a cluster-wide updater flag.
+          args:
+            - "--min-replicas={{ .Values.verticalPodAutoscaler.updater.minReplicas }}"
+          env:
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          resources:
+            {{- toYaml .Values.verticalPodAutoscaler.resources.updater | nindent 12 }}
+          ports:
+            - name: prometheus
+              containerPort: 8943
+          livenessProbe:
+            httpGet:
+              path: /health-check
+              port: prometheus
+              scheme: HTTP
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health-check
+              port: prometheus
+              scheme: HTTP
+            periodSeconds: 10
+            failureThreshold: 3
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vpa-admission-controller
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vpa-admission-controller
+  template:
+    metadata:
+      labels:
+        app: vpa-admission-controller
+    spec:
+      serviceAccountName: vpa-admission-controller
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534 # nobody
+      containers:
+        - name: admission-controller
+          image: {{ .Values.verticalPodAutoscaler.images.admissionController | quote }}
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          # The admission-controller self-registers its MutatingWebhookConfiguration
+          # from the CA in the mounted vpa-tls-certs Secret (default
+          # --register-webhook=true), pointing at the vpa-webhook Service below.
+          args: ["--v=4", "--stderrthreshold=info", "--reload-cert"]
+          volumeMounts:
+            - name: tls-certs
+              mountPath: "/etc/tls-certs"
+              readOnly: true
+          resources:
+            {{- toYaml .Values.verticalPodAutoscaler.resources.admissionController | nindent 12 }}
+          ports:
+            - containerPort: 8000
+            - name: prometheus
+              containerPort: 8944
+          livenessProbe:
+            httpGet:
+              path: /health-check
+              port: prometheus
+              scheme: HTTP
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health-check
+              port: prometheus
+              scheme: HTTP
+            periodSeconds: 10
+            failureThreshold: 3
+      volumes:
+        - name: tls-certs
+          secret:
+            secretName: vpa-tls-certs
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vpa-webhook
+  namespace: {{ .Release.Namespace }}
+spec:
+  ports:
+    - port: 443
+      targetPort: 8000
+  selector:
+    app: vpa-admission-controller
+{{- end }}

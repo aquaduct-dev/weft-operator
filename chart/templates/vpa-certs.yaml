@@ -1,0 +1,20 @@
+# Self-signed serving cert for the VPA admission webhook. Upstream's vpa-up.sh
+# runs gencerts.sh to create this Secret out-of-band; we mint it in-chart with
+# Helm's x509 helpers instead (keys match what the admission-controller expects
+# under /etc/tls-certs: caCert.pem / serverCert.pem / serverKey.pem). The value
+# is reused across upgrades via lookup so the CA doesn't rotate out from under
+# the self-registered MutatingWebhookConfiguration. Rendered only when this chart
+# is bootstrapping VPA — see the installVpaController helper.
+{{- if eq (include "weft-operator.installVpaController" .) "true" }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vpa-tls-certs
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "weft-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: vpa-admission-controller
+type: Opaque
+data:
+  {{- include "weft-operator.vpaTlsCerts" . | nindent 2 }}
+{{- end }}

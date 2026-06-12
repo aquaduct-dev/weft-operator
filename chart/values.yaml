@@ -31,13 +31,70 @@ securityContext:
   runAsNonRoot: true
   runAsUser: 1000
 
+# Static resources for the operator container. Memory is also managed by the VPA
+# below (updateMode: Auto) — these values are the floor used before VPA attaches
+# and the fallback when verticalPodAutoscaler.enabled=false. The memory limit was
+# raised from 128Mi (which OOM-killed the cluster-wide operator, exit 137) to give
+# immediate headroom; CPU is left to the static values since the VPA only manages
+# memory.
 resources:
   limits:
     cpu: 500m
-    memory: 128Mi
+    memory: 256Mi
   requests:
     cpu: 10m
-    memory: 64Mi
+    memory: 128Mi
+
+# Vertical Pod Autoscaler for the operator. Manages MEMORY only (CPU stays at the
+# static .resources above). With a bundled, auto-installed VPA controller stack so
+# the chart is self-contained on clusters that don't already run VPA.
+verticalPodAutoscaler:
+  # Create a VerticalPodAutoscaler for the operator Deployment.
+  enabled: true
+
+  # Whether to install the bundled VPA controller stack (CRDs + recommender +
+  # updater + admission-controller + RBAC + webhook), vendored from upstream
+  # vertical-pod-autoscaler-1.7.0.
+  #   auto  — install only if the cluster has no VPA API yet (or we already own
+  #           the install). Leaves an existing cluster-wide VPA untouched.
+  #   true  — always install/manage it.
+  #   false — never; assume VPA is provided cluster-wide.
+  # NOTE: on a cluster with no VPA, the operator's own VPA object attaches on the
+  # SECOND `helm upgrade` (the first lays down the CRD/controllers). Re-run the
+  # upgrade once to converge.
+  installController: auto
+
+  # Auto: the updater evicts+recreates the pod to apply new memory.
+  # Initial: only sets memory at pod creation. Off: recommend-only.
+  updateMode: Auto
+
+  # Bounds for the memory recommendation applied to the operator.
+  minAllowedMemory: 64Mi
+  maxAllowedMemory: 512Mi
+
+  updater:
+    # Upstream defaults to 2, which makes the updater skip single-replica targets.
+    # weft-operator runs one leader-elected replica, so this must be 1 for Auto to
+    # act on it. Cluster-wide updater flag.
+    minReplicas: 1
+
+  # Pinned VPA component images (registry.k8s.io). Bump in lockstep on upgrade.
+  images:
+    recommender: registry.k8s.io/autoscaling/vpa-recommender:1.7.0
+    updater: registry.k8s.io/autoscaling/vpa-updater:1.7.0
+    admissionController: registry.k8s.io/autoscaling/vpa-admission-controller:1.7.0
+
+  # Resource requests/limits for the VPA controllers (upstream 1.7.0 defaults).
+  resources:
+    recommender:
+      limits: {cpu: 200m, memory: 1000Mi}
+      requests: {cpu: 50m, memory: 500Mi}
+    updater:
+      limits: {cpu: 200m, memory: 1000Mi}
+      requests: {cpu: 50m, memory: 500Mi}
+    admissionController:
+      limits: {cpu: 200m, memory: 500Mi}
+      requests: {cpu: 50m, memory: 200Mi}
 
 nodeSelector: {}
 

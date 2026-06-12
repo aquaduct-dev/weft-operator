@@ -13,6 +13,11 @@ exports_files([
     "serviceaccount.yaml",
     "_helpers.tpl",
     "gatewayclass.yaml",
+    "vpa.yaml",
+    "vpa-crd.yaml",
+    "vpa-rbac.yaml",
+    "vpa-controllers.yaml",
+    "vpa-certs.yaml",
 ])
 
 filegroup(
