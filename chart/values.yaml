@@ -32,18 +32,20 @@ securityContext:
   runAsUser: 1000
 
 # Static resources for the operator container. Memory is also managed by the VPA
-# below (updateMode: Auto) — these values are the floor used before VPA attaches
-# and the fallback when verticalPodAutoscaler.enabled=false. The memory limit was
-# raised from 128Mi (which OOM-killed the cluster-wide operator, exit 137) to give
-# immediate headroom; CPU is left to the static values since the VPA only manages
-# memory.
+# below (updateMode: Recreate) — these values are the floor used before VPA
+# attaches and the fallback when verticalPodAutoscaler.enabled=false. The 128Mi
+# limit OOM-killed the cluster-wide operator (exit 137); the observed working set
+# under load is ~335-500Mi, so the request is set to 500Mi with a 2x limit. Keep
+# minAllowedMemory below in sync — VPA admission overrides this request on pod
+# creation, so the floor there is what actually takes effect. CPU is left static
+# since the VPA only manages memory.
 resources:
   limits:
     cpu: 500m
-    memory: 256Mi
+    memory: 1000Mi
   requests:
     cpu: 10m
-    memory: 128Mi
+    memory: 500Mi
 
 # Vertical Pod Autoscaler for the operator. Manages MEMORY only (CPU stays at the
 # static .resources above). With a bundled, auto-installed VPA controller stack so
@@ -70,9 +72,13 @@ verticalPodAutoscaler:
   # warns about). Initial: only sets memory at pod creation. Off: recommend-only.
   updateMode: Recreate
 
-  # Bounds for the memory recommendation applied to the operator.
-  minAllowedMemory: 64Mi
-  maxAllowedMemory: 512Mi
+  # Bounds for the memory recommendation applied to the operator. minAllowedMemory
+  # is the effective initial request — VPA admission pins the pod to at least this
+  # on creation, so it must match the static requests.memory (500Mi) above. The
+  # cluster updater is --min-replicas=2 and can't resize the running single pod, so
+  # a generous floor (rather than a tight recommendation) is what keeps it off OOM.
+  minAllowedMemory: 500Mi
+  maxAllowedMemory: 1000Mi
 
   updater:
     # Upstream defaults to 2, which makes the updater skip single-replica targets.
