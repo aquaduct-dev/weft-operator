@@ -64,9 +64,11 @@ verticalPodAutoscaler:
   # upgrade once to converge.
   installController: auto
 
-  # Auto: the updater evicts+recreates the pod to apply new memory.
-  # Initial: only sets memory at pod creation. Off: recommend-only.
-  updateMode: Auto
+  # Recreate: the updater evicts+recreates the pod to apply new memory, and the
+  # admission-controller injects the recommendation on (re)creation. This is the
+  # current non-deprecated equivalent of the old "Auto" (which the API server now
+  # warns about). Initial: only sets memory at pod creation. Off: recommend-only.
+  updateMode: Recreate
 
   # Bounds for the memory recommendation applied to the operator.
   minAllowedMemory: 64Mi
@@ -74,8 +76,8 @@ verticalPodAutoscaler:
 
   updater:
     # Upstream defaults to 2, which makes the updater skip single-replica targets.
-    # weft-operator runs one leader-elected replica, so this must be 1 for Auto to
-    # act on it. Cluster-wide updater flag.
+    # weft-operator runs one leader-elected replica, so this must be 1 for Recreate
+    # to act on it. Cluster-wide updater flag.
     minReplicas: 1
 
   # Pinned VPA component images (registry.k8s.io). Bump in lockstep on upgrade.

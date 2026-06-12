@@ -1,5 +1,5 @@
 # VerticalPodAutoscaler for weft-operator itself. Manages MEMORY only — CPU stays
-# at the static request/limit from .Values.resources. updateMode: Auto lets the
+# at the static request/limit from .Values.resources. updateMode: Recreate lets the
 # updater evict+recreate the (single) operator pod so the admission-controller can
 # inject the recommended memory, ending the OOM/restart loop.
 #
