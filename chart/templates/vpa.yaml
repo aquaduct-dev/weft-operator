@@ -1,7 +1,9 @@
 # VerticalPodAutoscaler for weft-operator itself. Manages MEMORY only — CPU stays
-# at the static request/limit from .Values.resources. updateMode: Recreate lets the
-# updater evict+recreate the (single) operator pod so the admission-controller can
-# inject the recommended memory, ending the OOM/restart loop.
+# at the static request/limit from .Values.resources. updateMode is configurable
+# (default "Off"): the recommendation is computed and surfaced but not applied,
+# since the shared cluster updater (--min-replicas=2) won't evict a single-replica
+# pod — so the operator runs at the static .resources and the recommendation is
+# advisory (e.g. for a self-restart loop).
 #
 # Gated on the autoscaling.k8s.io/v1 API being registered: on a cluster that starts
 # without VPA, the first `helm upgrade` lays down the controller stack (which

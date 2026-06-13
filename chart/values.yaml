@@ -31,21 +31,19 @@ securityContext:
   runAsNonRoot: true
   runAsUser: 1000
 
-# Static resources for the operator container. Memory is also managed by the VPA
-# below (updateMode: Recreate) — these values are the floor used before VPA
-# attaches and the fallback when verticalPodAutoscaler.enabled=false. The 128Mi
-# limit OOM-killed the cluster-wide operator (exit 137); the observed working set
-# under load is ~335-500Mi, so the request is set to 500Mi with a 2x limit. Keep
-# minAllowedMemory below in sync — VPA admission overrides this request on pod
-# creation, so the floor there is what actually takes effect. CPU is left static
-# since the VPA only manages memory.
+# Static resources for the operator container. With the VPA in updateMode: Off
+# (below), THESE are the actual runtime values — VPA observes and recommends but
+# does not mutate the pod, so the operator runs at exactly request/limit. The
+# 128Mi limit OOM-killed the cluster-wide operator (exit 137); steady-state usage
+# is ~150Mi with a recommendation around ~335Mi, so 250Mi request / 500Mi limit
+# gives headroom without over-reserving. CPU is left static (VPA is memory-only).
 resources:
   limits:
     cpu: 500m
-    memory: 1000Mi
+    memory: 500Mi
   requests:
     cpu: 10m
-    memory: 500Mi
+    memory: 250Mi
 
 # Vertical Pod Autoscaler for the operator. Manages MEMORY only (CPU stays at the
 # static .resources above). With a bundled, auto-installed VPA controller stack so
@@ -66,18 +64,17 @@ verticalPodAutoscaler:
   # upgrade once to converge.
   installController: auto
 
-  # Recreate: the updater evicts+recreates the pod to apply new memory, and the
-  # admission-controller injects the recommendation on (re)creation. This is the
-  # current non-deprecated equivalent of the old "Auto" (which the API server now
-  # warns about). Initial: only sets memory at pod creation. Off: recommend-only.
-  updateMode: Recreate
+  # Off: VPA computes a recommendation (visible in `kubectl get vpa`) but does NOT
+  # mutate the pod — the operator runs at the static .resources above. This is
+  # deliberate: the shared cluster updater runs --min-replicas=2 and refuses to
+  # evict a single-replica pod, so Recreate/Auto can only ever apply on pod
+  # creation anyway and otherwise leaves a stale injection in place. Off keeps the
+  # runtime resources predictable (250Mi/500Mi) while still surfacing the
+  # recommendation, which a future operator self-restart loop could act on.
+  updateMode: "Off"
 
-  # Bounds for the memory recommendation applied to the operator. minAllowedMemory
-  # is the effective initial request — VPA admission pins the pod to at least this
-  # on creation, so it must match the static requests.memory (500Mi) above. The
-  # cluster updater is --min-replicas=2 and can't resize the running single pod, so
-  # a generous floor (rather than a tight recommendation) is what keeps it off OOM.
-  minAllowedMemory: 500Mi
+  # Bounds for the observed recommendation (not applied while updateMode is Off).
+  minAllowedMemory: 250Mi
   maxAllowedMemory: 1000Mi
 
   updater:
