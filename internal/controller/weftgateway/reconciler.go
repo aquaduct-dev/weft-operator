@@ -214,10 +214,11 @@ func (r *WeftGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				// If we have path match, append to gateway listener hostname.
 				// Gateway Listeners:
 				for _, listener := range gateway.Spec.Listeners {
-					// Check if route attaches to this listener (simplified)
-
 					// Assume Listener Hostname is the base for DstURL (external hostname)
 					if listener.Hostname == nil {
+						continue
+					}
+					if !isRouteAttachedToListener(&route, &gateway, listener) {
 						continue
 					}
 					// Determine scheme based on listener protocol
@@ -777,6 +778,74 @@ func (r *WeftGatewayReconciler) isRouteAttachedToGateway(route *gatewayv1.HTTPRo
 			}
 			return true
 		}
+	}
+	return false
+}
+
+// isRouteAttachedToListener reports whether route binds to this specific
+// listener. isRouteAttachedToGateway only answers "does this route reference
+// the Gateway at all"; on a Gateway with more than one listener that is not
+// enough, because a route belongs to a *subset* of the listeners. Two gates
+// apply, per the Gateway API attachment rules:
+//
+//   - sectionName — a parentRef naming this Gateway may pin itself to one
+//     listener by name. A parentRef with no sectionName is unpinned and
+//     matches any listener.
+//   - hostname — if the route declares hostnames, at least one must intersect
+//     the listener's hostname (either side may be a "*.suffix" wildcard).
+//
+// Without these gates every attached route pairs with every listener, and the
+// resulting cross-product mints a WeftTunnel per bogus (route, listener) pair.
+// Because the tunnel name hashes dstURL, those extras are stable and look
+// legitimate to the prune loop, so they are never collected: each real dstURL
+// ends up with two tunnels racing for the same proxy, and whichever loses
+// crashloops forever on "409 Conflict: proxy conflicts with existing proxy".
+func isRouteAttachedToListener(route *gatewayv1.HTTPRoute, gateway *gatewayv1.Gateway, listener gatewayv1.Listener) bool {
+	for _, parent := range route.Spec.ParentRefs {
+		if string(parent.Name) != gateway.Name {
+			continue
+		}
+		if parent.Namespace != nil && string(*parent.Namespace) != gateway.Namespace {
+			continue
+		}
+		if parent.SectionName != nil && string(*parent.SectionName) != string(listener.Name) {
+			continue
+		}
+		return hostnamesIntersect(route.Spec.Hostnames, listener.Hostname)
+	}
+	return false
+}
+
+// hostnamesIntersect reports whether any route hostname overlaps the
+// listener's. An absent listener hostname matches everything, and a route
+// that declares no hostnames inherits the listener's.
+func hostnamesIntersect(routeHostnames []gatewayv1.Hostname, listenerHostname *gatewayv1.Hostname) bool {
+	if listenerHostname == nil || *listenerHostname == "" {
+		return true
+	}
+	if len(routeHostnames) == 0 {
+		return true
+	}
+	for _, rh := range routeHostnames {
+		if hostnameMatches(string(rh), string(*listenerHostname)) {
+			return true
+		}
+	}
+	return false
+}
+
+// hostnameMatches compares two Gateway API hostnames, allowing either side to
+// be a "*.suffix" wildcard. A wildcard covers proper subdomains only, so
+// "*.example.com" matches "a.example.com" but not "example.com" itself.
+func hostnameMatches(a, b string) bool {
+	if a == b {
+		return true
+	}
+	if strings.HasPrefix(a, "*.") && strings.HasSuffix(b, strings.TrimPrefix(a, "*")) {
+		return true
+	}
+	if strings.HasPrefix(b, "*.") && strings.HasSuffix(a, strings.TrimPrefix(b, "*")) {
+		return true
 	}
 	return false
 }

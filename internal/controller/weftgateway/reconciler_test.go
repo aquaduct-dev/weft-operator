@@ -136,6 +136,139 @@ var _ = Describe("WeftGateway Controller", func() {
 			Expect(tunnel.Spec.DstURL).To(Equal("http://test.example.com/api"))
 		})
 
+		It("Should attach each route only to its own listener, not every listener", func(ctx context.Context) {
+			// Regression: the listener loop used to pair every attached route
+			// with every listener on the Gateway. On a two-listener Gateway
+			// that minted 4 tunnels for 2 routes, and the 2 bogus ones raced
+			// the real ones for the same proxy on the weft server — the loser
+			// crashlooping forever on "409 proxy conflicts with existing proxy".
+			By("Creating GatewayClass")
+			gwClass := &gatewayv1.GatewayClass{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "weft-gateway-class-sections",
+				},
+				Spec: gatewayv1.GatewayClassSpec{
+					ControllerName: weftgateway.ControllerName,
+				},
+			}
+			Expect(k8sClient.Create(ctx, gwClass)).To(Succeed())
+
+			By("Creating a Gateway with two listeners on different hostnames")
+			gwName := "multi-listener-gateway"
+			primaryHost := gatewayv1.Hostname("primary.example.com")
+			secondaryHost := gatewayv1.Hostname("secondary.example.com")
+			gateway := &gatewayv1.Gateway{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: gatewayv1.GroupVersion.String(),
+					Kind:       "Gateway",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      gwName,
+					Namespace: "default",
+				},
+				Spec: gatewayv1.GatewaySpec{
+					GatewayClassName: gatewayv1.ObjectName(gwClass.Name),
+					Listeners: []gatewayv1.Listener{
+						{
+							Name:     "primary",
+							Port:     80,
+							Protocol: gatewayv1.HTTPProtocolType,
+							Hostname: &primaryHost,
+						},
+						{
+							Name:     "secondary",
+							Port:     80,
+							Protocol: gatewayv1.HTTPProtocolType,
+							Hostname: &secondaryHost,
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, gateway)).To(Succeed())
+
+			By("Creating one HTTPRoute per listener, each pinned via sectionName")
+			pathMatch := gatewayv1.PathMatchPathPrefix
+			backendKind := gatewayv1.Kind("Service")
+			backendPort := gatewayv1.PortNumber(8080)
+			for _, tc := range []struct {
+				name        string
+				sectionName string
+				hostname    string
+				service     string
+			}{
+				{"primary-route", "primary", "primary.example.com", "primary-svc"},
+				{"secondary-route", "secondary", "secondary.example.com", "secondary-svc"},
+			} {
+				route := &gatewayv1.HTTPRoute{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      tc.name,
+						Namespace: "default",
+					},
+					Spec: gatewayv1.HTTPRouteSpec{
+						CommonRouteSpec: gatewayv1.CommonRouteSpec{
+							ParentRefs: []gatewayv1.ParentReference{
+								{
+									Name:        gatewayv1.ObjectName(gwName),
+									SectionName: ptrTo(gatewayv1.SectionName(tc.sectionName)),
+								},
+							},
+						},
+						Hostnames: []gatewayv1.Hostname{gatewayv1.Hostname(tc.hostname)},
+						Rules: []gatewayv1.HTTPRouteRule{
+							{
+								Matches: []gatewayv1.HTTPRouteMatch{
+									{
+										Path: &gatewayv1.HTTPPathMatch{
+											Type:  &pathMatch,
+											Value: ptrTo("/"),
+										},
+									},
+								},
+								BackendRefs: []gatewayv1.HTTPBackendRef{
+									{
+										BackendRef: gatewayv1.BackendRef{
+											BackendObjectReference: gatewayv1.BackendObjectReference{
+												Name: gatewayv1.ObjectName(tc.service),
+												Port: &backendPort,
+												Kind: &backendKind,
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				}
+				Expect(k8sClient.Create(ctx, route)).To(Succeed())
+			}
+
+			r := &weftgateway.WeftGatewayReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			By("Reconciling")
+			_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: gateway.Name, Namespace: gateway.Namespace}})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying exactly one tunnel per route, not the 2x2 cross-product")
+			var tunnelList weftv1alpha1.WeftTunnelList
+			Eventually(func() int {
+				k8sClient.List(ctx, &tunnelList, client.MatchingLabels{"gateway": gwName})
+				return len(tunnelList.Items)
+			}, timeout, interval).Should(Equal(2))
+
+			By("Verifying each tunnel pairs its own route's backend with its own listener's hostname")
+			pairs := map[string]string{}
+			for _, t := range tunnelList.Items {
+				pairs[t.Spec.DstURL] = t.Spec.SrcURL
+			}
+			Expect(pairs).To(Equal(map[string]string{
+				"http://primary.example.com/":   "http://primary-svc.default.svc:8080",
+				"http://secondary.example.com/": "http://secondary-svc.default.svc:8080",
+			}))
+		})
+
 		It("Should use https in DstURL for HTTPS listeners", func(ctx context.Context) {
 			// Use a fake client to bypass CRD validation for HTTPS listener TLS requirements
 			fakeScheme := k8sClient.Scheme()
