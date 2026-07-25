@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -165,31 +164,6 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 				SecretKeyRef: weftServer.Spec.CloudflareTokenSecretRef,
 			},
 		})
-	}
-
-	// Fleet-wide honeypot integration. When the operator itself was
-	// deployed with WEFT_OPERATOR_HONEYPOT_INGEST_URL set (helm chart
-	// .Values.honeypot.enabled=true), propagate the integration to every
-	// weft-server pod we stamp out: --honeypot-ingest-url tells weft to
-	// emit structured events for unmatched-host HTTP requests and TLS
-	// handshake errors, and WEFT_HONEYPOT_INGEST_SECRET (from the
-	// helm-managed Secret) signs the X-Darkforest-Secret header.
-	if honeypotURL := os.Getenv("WEFT_OPERATOR_HONEYPOT_INGEST_URL"); honeypotURL != "" {
-		cmdArgs = append(cmdArgs, fmt.Sprintf("--honeypot-ingest-url=%s", honeypotURL))
-		if dstHost := os.Getenv("WEFT_OPERATOR_HONEYPOT_DST_HOST"); dstHost != "" {
-			cmdArgs = append(cmdArgs, fmt.Sprintf("--honeypot-dst-host=%s", dstHost))
-		}
-		if secretName := os.Getenv("WEFT_OPERATOR_HONEYPOT_INGEST_SECRET_NAME"); secretName != "" {
-			envVars = append(envVars, corev1.EnvVar{
-				Name: "WEFT_HONEYPOT_INGEST_SECRET",
-				ValueFrom: &corev1.EnvVarSource{
-					SecretKeyRef: &corev1.SecretKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
-						Key:                  "secret",
-					},
-				},
-			})
-		}
 	}
 
 	// Reconcile PVC

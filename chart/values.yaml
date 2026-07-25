@@ -107,40 +107,6 @@ tolerations: []
 
 affinity: {}
 
-# Honeypot — when enabled, every WeftServer Deployment the operator stamps
-# out is augmented with --honeypot-* flags so that *production* weft-server
-# pods emit a structured event for each unmatched-host HTTP request and TLS
-# handshake error they see. Events POST to the configured ingest URL with
-# an auto-generated X-Darkforest-Secret header.
-#
-# What happens when enabled=true:
-#   1. The chart creates a Secret named `<release>-honeypot-ingest` holding
-#      a randomly-generated `secret` value (re-used across upgrades via
-#      helm lookup so the value stays stable on the consumer side).
-#   2. The operator pod gets WEFT_OPERATOR_HONEYPOT_INGEST_URL and
-#      WEFT_OPERATOR_HONEYPOT_INGEST_SECRET_NAME env vars.
-#   3. WeftServerReconciler reads those env vars and, on every weft-server
-#      Deployment it reconciles, appends --honeypot-ingest-url=... plus a
-#      WEFT_HONEYPOT_INGEST_SECRET env sourced from the Secret. Existing
-#      weft-server functionality (tunnels, ACME, proxying) is unaffected.
-#
-# A Helm upgrade is all that's needed to turn the fleet on — no per-
-# WeftServer config edits, no extra Deployments to manage.
-honeypot:
-  enabled: false
-
-  # Remote URL each weft-server pod POSTs events to. Required when enabled.
-  ingestURL: ""  # e.g. https://aquaduct.dev/api/darkforest/ingest
-
-  # `dst_host` label sent with each event. Empty → the weft-server pod's
-  # own hostname (uniquely identifies the bastion in the feed).
-  dstHost: ""
-
-  # If set, the chart uses this existing Secret instead of creating its
-  # own. The Secret must have a `secret` key matching the consumer side's
-  # X-Darkforest-Secret. Leave empty to let the chart auto-generate.
-  existingSecret: ""
-
 # GatewayClass managed by this chart. Users point their Gateway objects at
 # .Values.gatewayClass.name to route traffic through the weft operator.
 gatewayClass:

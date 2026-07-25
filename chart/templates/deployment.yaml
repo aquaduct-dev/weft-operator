@@ -35,21 +35,6 @@ spec:
             - "--health-probe-bind-address=:8081"
             - "--metrics-bind-address=127.0.0.1:8080"
             - "--leader-elect"
-          {{- if .Values.honeypot.enabled }}
-          # Honeypot — propagates to every WeftServer Deployment via the
-          # reconciler, which reads these env vars and appends
-          # --honeypot-ingest-url plus the corresponding $WEFT_HONEYPOT_
-          # INGEST_SECRET env to the pod spec.
-          env:
-            - name: WEFT_OPERATOR_HONEYPOT_INGEST_URL
-              value: {{ required ".Values.honeypot.ingestURL is required when honeypot.enabled=true" .Values.honeypot.ingestURL | quote }}
-            - name: WEFT_OPERATOR_HONEYPOT_INGEST_SECRET_NAME
-              value: {{ include "weft-operator.honeypotSecretName" . | quote }}
-            {{- if .Values.honeypot.dstHost }}
-            - name: WEFT_OPERATOR_HONEYPOT_DST_HOST
-              value: {{ .Values.honeypot.dstHost | quote }}
-            {{- end }}
-          {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           livenessProbe:

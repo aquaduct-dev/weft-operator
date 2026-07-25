@@ -51,32 +51,6 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
-Honeypot ingest Secret name. Prefer .Values.honeypot.existingSecret if set;
-otherwise default to "<release>-honeypot-ingest".
-*/}}
-{{- define "weft-operator.honeypotSecretName" -}}
-{{- if .Values.honeypot.existingSecret }}
-{{- .Values.honeypot.existingSecret }}
-{{- else }}
-{{- printf "%s-honeypot-ingest" (include "weft-operator.fullname" .) | trunc 63 | trimSuffix "-" }}
-{{- end }}
-{{- end }}
-
-{{/*
-Honeypot ingest secret value. Reuses an existing in-cluster Secret value when
-present (so upgrades don't rotate the secret out from under the consumer),
-otherwise generates a 32-char random string on first install.
-*/}}
-{{- define "weft-operator.honeypotSecretValue" -}}
-{{- $existing := (lookup "v1" "Secret" .Release.Namespace (include "weft-operator.honeypotSecretName" .)) -}}
-{{- if and $existing $existing.data $existing.data.secret -}}
-{{- index $existing.data "secret" | b64dec -}}
-{{- else -}}
-{{- randAlphaNum 32 -}}
-{{- end -}}
-{{- end -}}
-
-{{/*
 Whether to render the bundled VPA controller stack (CRDs, RBAC, recommender,
 updater, admission-controller, webhook). Outputs "true" or "".
 
