@@ -32,6 +32,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	weftv1alpha1 "aquaduct.dev/weft-operator/api/v1alpha1"
 	"aquaduct.dev/weft-operator/internal/controller/aquaducttaas"
@@ -284,6 +285,44 @@ var _ = Describe("AquaductTaaS Controller", func() {
 		Expect(cond.Reason).To(Equal("Synced"))
 		Expect(t.Status.SyncedServers).To(ConsistOf(srvName))
 		Expect(t.Status.LastSyncTime).NotTo(BeNil())
+	})
+
+	It("Leaves status alone when a resync finds nothing changed", func(ctx context.Context) {
+		createSecret(ctx, "token", "tok")
+		createTaaS(ctx, &corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+			Key:                  "token",
+		})
+		srvName := "cloud-bastion-" + randomSuffix()
+		mock.setList(func(ctx context.Context, token string) ([]aquaducttaas.ExternalServer, error) {
+			return []aquaducttaas.ExternalServer{
+				{ID: "id-" + srvName, Name: srvName, IP: "1.2.3.4", ConnectionString: "weft://secret1@1.2.3.4:8080"},
+			}, nil
+		})
+
+		_, err := reconcile(ctx, newReconciler())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(getTaaS(ctx).Status.LastSyncTime).NotTo(BeNil())
+
+		By("resyncing twice more with an identical API response")
+		var statusWrites int
+		counting := &statusCountingClient{Client: k8sClient, writes: &statusWrites}
+		r := &aquaducttaas.AquaductTaaSReconciler{Client: counting, Scheme: k8sClient.Scheme(), APIClient: mock}
+		req := ctrl.Request{NamespacedName: types.NamespacedName{Name: taasName, Namespace: "default"}}
+		for i := 0; i < 2; i++ {
+			_, err = r.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		// Every status write bumps resourceVersion, and this controller
+		// watches itself — so stamping LastSyncTime on a pass that found
+		// nothing new enqueues the next reconcile immediately, and the pair
+		// spins (re-calling GET /api/bastion each time) instead of resting on
+		// RequeueAfter.
+		Expect(statusWrites).To(BeZero(),
+			"a no-change resync must not write status; that write re-triggers our own watch")
+		Expect(getTaaS(ctx).Status.LastSyncTime).NotTo(BeNil(),
+			"the heartbeat set by the first sync must survive")
 	})
 
 	It("Updates an existing WeftServer when its ConnectionString changes", func(ctx context.Context) {
@@ -804,3 +843,27 @@ func randomSuffix() string {
 }
 
 var suffixCounter int64
+
+// statusCountingClient tallies status-subresource writes so a test can assert
+// that a converged reconcile stops writing. Counting the calls rather than
+// watching resourceVersion matters because metav1.Time serializes at second
+// granularity: two heartbeat writes inside the same second are identical on
+// the wire and the API server treats the second as a no-op, hiding the churn.
+type statusCountingClient struct {
+	client.Client
+	writes *int
+}
+
+func (c *statusCountingClient) Status() client.SubResourceWriter {
+	return &countingStatusWriter{SubResourceWriter: c.Client.Status(), writes: c.writes}
+}
+
+type countingStatusWriter struct {
+	client.SubResourceWriter
+	writes *int
+}
+
+func (w *countingStatusWriter) Update(ctx context.Context, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+	*w.writes++
+	return w.SubResourceWriter.Update(ctx, obj, opts...)
+}

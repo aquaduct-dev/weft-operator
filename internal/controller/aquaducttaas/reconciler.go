@@ -23,6 +23,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -130,6 +131,10 @@ func (r *AquaductTaaSReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return r.failure(ctx, &taas, "SecretError", err.Error())
 	}
 
+	// Snapshot the status as read so commitStatus can tell a real change
+	// from a fresh heartbeat.
+	before := taas.Status.DeepCopy()
+
 	servers, err := r.APIClient.ListExternalServers(ctx, token)
 	if err != nil {
 		log.Error(err, "Failed to list servers from aquaduct.dev")
@@ -156,8 +161,7 @@ func (r *AquaductTaaSReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		})
 	}
 	sort.Slice(bastions, func(i, j int) bool { return bastions[i].ID < bastions[j].ID })
-	now := metav1.Now()
-	taas.Status.LastSyncTime = &now
+	lastSync := taas.Status.LastSyncTime
 	taas.Status.SyncedServers = synced
 	taas.Status.Bastions = bastions
 	meta.SetStatusCondition(&taas.Status.Conditions, metav1.Condition{
@@ -166,10 +170,48 @@ func (r *AquaductTaaSReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		Reason:  "Synced",
 		Message: fmt.Sprintf("Synced %d external server(s) from aquaduct.dev", len(synced)),
 	})
-	if err := r.Status().Update(ctx, &taas); err != nil {
+	if err := r.commitStatus(ctx, &taas, before, lastSync); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: resyncInterval}, nil
+}
+
+// commitStatus writes the status subresource only when something other than
+// the heartbeat changed, or when the heartbeat itself has gone stale.
+//
+// LastSyncTime used to be stamped with metav1.Now() and written on every
+// pass. Since that always produced a new resourceVersion, the write tripped
+// this controller's own For() watch and enqueued the next reconcile
+// immediately — a self-sustaining loop that re-hit GET /api/bastion on
+// aquaduct.dev every iteration and raced itself into "the object has been
+// modified" conflicts. RequeueAfter(resyncInterval) never got a chance to be
+// the pacer it was written to be.
+//
+// before is the status as read at the top of the pass; lastSync is the
+// heartbeat carried on it, compared separately so a fresh timestamp alone is
+// not treated as a change.
+func (r *AquaductTaaSReconciler) commitStatus(
+	ctx context.Context,
+	taas *weftv1alpha1.AquaductTaaS,
+	before *weftv1alpha1.AquaductTaaSStatus,
+	lastSync *metav1.Time,
+) error {
+	prev := before.DeepCopy()
+	prev.LastSyncTime = nil
+	next := taas.Status.DeepCopy()
+	next.LastSyncTime = nil
+
+	stale := lastSync == nil || time.Since(lastSync.Time) >= resyncInterval
+	if equality.Semantic.DeepEqual(prev, next) && !stale {
+		// Nothing moved and the heartbeat is still fresh — leave the object
+		// alone so we don't wake ourselves up again.
+		taas.Status.LastSyncTime = lastSync
+		return nil
+	}
+
+	now := metav1.Now()
+	taas.Status.LastSyncTime = &now
+	return r.Status().Update(ctx, taas)
 }
 
 // readToken resolves the access token through the referenced Secret. An empty
