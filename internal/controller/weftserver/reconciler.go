@@ -26,6 +26,7 @@ import (
 
 	"k8s.io/client-go/kubernetes"
 
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -35,14 +36,22 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	weftv1alpha1 "aquaduct.dev/weft-operator/api/v1alpha1"
 	"aquaduct.dev/weft-operator/internal/resource"
 	weftclient "github.com/aquaduct-dev/weft/src/client"
 )
+
+// statusRefreshInterval is how often we re-poll a server for its tunnel
+// list. Status carries live Tx/Rx counters, so it can never be "converged" —
+// it has to be refreshed on a timer rather than by re-triggering on our own
+// writes.
+const statusRefreshInterval = 30 * time.Second
 
 // WeftClient defines the interface for interacting with the weft server
 type WeftClient interface {
@@ -416,6 +425,9 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 func (r *WeftServerReconciler) updateWeftServerStatus(ctx context.Context, weftServer *weftv1alpha1.WeftServer, reconcileErr error) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
 
+	// Snapshot what we read so commitStatus can skip a no-op write.
+	before := weftServer.Status.DeepCopy()
+
 	// Set initial status conditions
 	if reconcileErr != nil {
 		meta.SetStatusCondition(&weftServer.Status.Conditions, metav1.Condition{
@@ -457,10 +469,10 @@ func (r *WeftServerReconciler) updateWeftServerStatus(ctx context.Context, weftS
 				Reason:  "ClientError",
 				Message: fmt.Sprintf("Failed to create weft client: %s", err.Error()),
 			})
-			if err := r.Status().Update(ctx, weftServer); err != nil {
+			if err := r.commitStatus(ctx, weftServer, before); err != nil {
 				return ctrl.Result{}, err
 			}
-			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+			return ctrl.Result{RequeueAfter: statusRefreshInterval}, nil
 		}
 
 		tunnels, err := weftClient.ListTunnels()
@@ -483,10 +495,10 @@ func (r *WeftServerReconciler) updateWeftServerStatus(ctx context.Context, weftS
 					Message: fmt.Sprintf("Failed to list tunnels: %s", err.Error()),
 				})
 			}
-			if err := r.Status().Update(ctx, weftServer); err != nil {
+			if err := r.commitStatus(ctx, weftServer, before); err != nil {
 				return ctrl.Result{}, err
 			}
-			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+			return ctrl.Result{RequeueAfter: statusRefreshInterval}, nil
 		}
 
 		// Convert weftclient.TunnelInfo to weftv1alpha1.TunnelStatus
@@ -508,7 +520,24 @@ func (r *WeftServerReconciler) updateWeftServerStatus(ctx context.Context, weftS
 		})
 	}
 
-	return ctrl.Result{}, r.Status().Update(ctx, weftServer)
+	return ctrl.Result{RequeueAfter: statusRefreshInterval}, r.commitStatus(ctx, weftServer, before)
+}
+
+// commitStatus writes the status subresource only when it differs from what
+// we read at the top of the pass.
+//
+// Status.Tunnels carries live Tx/Rx byte counters scraped from the server, so
+// an unconditional Status().Update produced a fresh resourceVersion on every
+// reconcile. That write fed the controller's own For() watch, which enqueued
+// another reconcile, which scraped new counters, which wrote again — a hot
+// loop bounded only by how fast the API server would take writes. It also
+// fanned out through WeftTunnel's Watches(&WeftServer{}) to every tunnel in
+// the cluster. Refresh is now driven by statusRefreshInterval instead.
+func (r *WeftServerReconciler) commitStatus(ctx context.Context, weftServer *weftv1alpha1.WeftServer, before *weftv1alpha1.WeftServerStatus) error {
+	if equality.Semantic.DeepEqual(before, &weftServer.Status) {
+		return nil
+	}
+	return r.Status().Update(ctx, weftServer)
 }
 
 func int32Ptr(i int32) *int32 {
@@ -521,7 +550,10 @@ func (r *WeftServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return err
 	}
 
+	// GenerationChangedPredicate keeps our own status writes from
+	// re-enqueueing us: generation only moves when .spec (or deletion)
+	// changes, and status updates leave it alone.
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&weftv1alpha1.WeftServer{}).
+		For(&weftv1alpha1.WeftServer{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Complete(r)
 }
