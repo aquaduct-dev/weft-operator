@@ -30,10 +30,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	weftv1alpha1 "aquaduct.dev/weft-operator/api/v1alpha1"
@@ -158,14 +160,17 @@ func (r *WeftTunnelReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			dep.Spec.MinReadySeconds = 15
 			dep.Spec.Template.ObjectMeta.Labels = labels
 			dep.Spec.Strategy.Type = appsv1.RecreateDeploymentStrategyType
-			dep.Spec.Template.Spec.Containers = []corev1.Container{
-				{
-					Name:            "tunnel",
-					Image:           "ghcr.io/aquaduct-dev/weft:latest", // TODO: Versioning
-					Args:            cmdArgs,
-					ImagePullPolicy: corev1.PullAlways,
-				},
-			}
+			// Mutate the container in place rather than replacing the slice.
+			// Assigning a fresh []Container dropped the fields the API server
+			// defaults (terminationMessagePath, terminationMessagePolicy,
+			// resources), so CreateOrUpdate saw a diff on every single pass
+			// and issued an Update that the server then defaulted straight
+			// back — an endless stream of no-op writes, one per tunnel per
+			// reconcile, that buried the logs and hammered the API server.
+			tunnelContainer := containerByName(&dep.Spec.Template.Spec.Containers, "tunnel")
+			tunnelContainer.Image = "ghcr.io/aquaduct-dev/weft:latest" // TODO: Versioning
+			tunnelContainer.Args = cmdArgs
+			tunnelContainer.ImagePullPolicy = corev1.PullAlways
 			err := controllerutil.SetOwnerReference(&weftTunnel, dep, r.Scheme)
 			if err != nil {
 				log.Error(err, "SetOwnerReference failed")
@@ -270,6 +275,19 @@ func int32Ptr(i int32) *int32 {
 	return &i
 }
 
+// containerByName returns a pointer to the named container in the pod spec,
+// appending an empty one if it isn't there yet. Callers set only the fields
+// they own so anything the API server defaulted survives the round trip.
+func containerByName(containers *[]corev1.Container, name string) *corev1.Container {
+	for i := range *containers {
+		if (*containers)[i].Name == name {
+			return &(*containers)[i]
+		}
+	}
+	*containers = append(*containers, corev1.Container{Name: name})
+	return &(*containers)[len(*containers)-1]
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *WeftTunnelReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
@@ -278,6 +296,10 @@ func (r *WeftTunnelReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(
 			&weftv1alpha1.WeftServer{},
 			handler.EnqueueRequestsFromMapFunc(r.findTunnelsForServer),
+			// Only .spec.connectionString feeds the tunnel command line, so
+			// re-enqueueing every tunnel for a server's status write (which
+			// happens whenever its Tx/Rx counters move) is pure churn.
+			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
 		Complete(r)
 }
