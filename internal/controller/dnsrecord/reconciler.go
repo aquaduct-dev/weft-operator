@@ -24,6 +24,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -119,6 +120,10 @@ func (r *DNSRecordReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 		return ctrl.Result{Requeue: true}, nil
 	}
+
+	// Snapshot the status as read so commitStatus can tell a real change
+	// from a fresh heartbeat.
+	before := dr.Status.DeepCopy()
 
 	taas, token, result, err := r.resolveAquaductTaaS(ctx, &dr)
 	if err != nil || result != nil {
@@ -306,10 +311,9 @@ func (r *DNSRecordReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		ObservedGeneration: dr.Generation,
 	})
 
-	now := metav1.Now()
-	dr.Status.LastSyncTime = &now
+	lastSync := dr.Status.LastSyncTime
 	dr.Status.ObservedGeneration = dr.Generation
-	if err := r.Status().Update(ctx, &dr); err != nil {
+	if err := r.commitStatus(ctx, &dr, before, lastSync); err != nil {
 		return ctrl.Result{}, err
 	}
 	if lookupErr != nil || resolvedStatus != metav1.ConditionTrue {
@@ -319,6 +323,39 @@ func (r *DNSRecordReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{RequeueAfter: errorRetry}, nil
 	}
 	return ctrl.Result{RequeueAfter: resyncInterval}, nil
+}
+
+// commitStatus writes the status subresource only when something other than
+// the heartbeat changed, or when the heartbeat itself has gone stale.
+//
+// Same shape as the AquaductTaaS fix: LastSyncTime was stamped every pass and
+// written unconditionally, so the write re-triggered this controller's own
+// For() watch and the reconcile paced itself off its own writes instead of
+// resyncInterval.
+//
+// before is the status as read at the top of the pass; lastSync is the
+// heartbeat carried on it, compared separately so a fresh timestamp alone is
+// not treated as a change.
+func (r *DNSRecordReconciler) commitStatus(
+	ctx context.Context,
+	dr *weftv1alpha1.DNSRecord,
+	before *weftv1alpha1.DNSRecordStatus,
+	lastSync *metav1.Time,
+) error {
+	prev := before.DeepCopy()
+	prev.LastSyncTime = nil
+	next := dr.Status.DeepCopy()
+	next.LastSyncTime = nil
+
+	stale := lastSync == nil || time.Since(lastSync.Time) >= resyncInterval
+	if equality.Semantic.DeepEqual(prev, next) && !stale {
+		dr.Status.LastSyncTime = lastSync
+		return nil
+	}
+
+	now := metav1.Now()
+	dr.Status.LastSyncTime = &now
+	return r.Status().Update(ctx, dr)
 }
 
 // selectBastions resolves spec.targetBastionIDs against the AquaductTaaS's

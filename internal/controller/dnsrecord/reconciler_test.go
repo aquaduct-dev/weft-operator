@@ -32,6 +32,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	weftv1alpha1 "aquaduct.dev/weft-operator/api/v1alpha1"
 	"aquaduct.dev/weft-operator/internal/controller/aquaducttaas"
@@ -307,6 +308,31 @@ var _ = Describe("DNSRecord Controller", func() {
 
 	// --- Happy paths -------------------------------------------------------
 
+	It("Leaves status alone when a resync finds nothing changed", func(ctx context.Context) {
+		createSecret(ctx, "token", "tok-new")
+		createTaaS(ctx, "token")
+		createDNSRecord(ctx)
+
+		_, err := reconcile(ctx, newReconciler())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(getDNSRecord(ctx).Status.LastSyncTime).NotTo(BeNil())
+
+		By("resyncing twice more against an unchanged world")
+		var statusWrites int
+		counting := &statusCountingClient{Client: k8sClient, writes: &statusWrites}
+		r := &dnsrecord.DNSRecordReconciler{Client: counting, Scheme: k8sClient.Scheme(), APIClient: mock}
+		req := ctrl.Request{NamespacedName: types.NamespacedName{Name: drName, Namespace: "default"}}
+		for i := 0; i < 2; i++ {
+			_, err = r.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		Expect(statusWrites).To(BeZero(),
+			"a no-change resync must not write status; that write re-triggers our own watch")
+		Expect(getDNSRecord(ctx).Status.LastSyncTime).NotTo(BeNil(),
+			"the heartbeat set by the first sync must survive")
+	})
+
 	It("Registers a new domain on first reconcile and records Ready=True", func(ctx context.Context) {
 		createSecret(ctx, "token", "tok-new")
 		createTaaS(ctx, "token")
@@ -513,7 +539,7 @@ var _ = Describe("DNSRecord Controller", func() {
 
 		res, err := reconcile(ctx, newReconciler())
 		Expect(err).NotTo(HaveOccurred())
-		Expect(res.RequeueAfter).To(Equal(30 * time.Second),
+		Expect(res.RequeueAfter).To(Equal(30*time.Second),
 			"an isolated lookup failure must requeue on the short cadence")
 
 		d := getDNSRecord(ctx)
@@ -803,3 +829,27 @@ func randomSuffix() string {
 }
 
 var suffixCounter int64
+
+// statusCountingClient tallies status-subresource writes so a test can assert
+// that a converged reconcile stops writing. Counting calls rather than
+// watching resourceVersion matters because metav1.Time serializes at second
+// granularity: two heartbeat writes inside the same second are identical on
+// the wire and the API server drops the second, hiding the churn.
+type statusCountingClient struct {
+	client.Client
+	writes *int
+}
+
+func (c *statusCountingClient) Status() client.SubResourceWriter {
+	return &countingStatusWriter{SubResourceWriter: c.Client.Status(), writes: c.writes}
+}
+
+type countingStatusWriter struct {
+	client.SubResourceWriter
+	writes *int
+}
+
+func (w *countingStatusWriter) Update(ctx context.Context, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+	*w.writes++
+	return w.SubResourceWriter.Update(ctx, obj, opts...)
+}
