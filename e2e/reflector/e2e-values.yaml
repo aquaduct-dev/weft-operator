@@ -1,0 +1,11 @@
+# Chart values for the airgapped e2e microVM: images are preloaded under
+# these tags, so nothing may be pulled.
+image:
+  url: ghcr.io/aquaduct-dev/weft-operator:e2e
+  pullPolicy: Never
+weftImage: ghcr.io/aquaduct-dev/weft:e2e
+verticalPodAutoscaler:
+  enabled: false
+  installController: "false"
+gatewayClass:
+  create: false

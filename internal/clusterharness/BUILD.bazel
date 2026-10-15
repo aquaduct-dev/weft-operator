@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "clusterharness",
+    srcs = ["clusterharness.go"],
+    importpath = "aquaduct.dev/weft-operator/internal/clusterharness",
+    visibility = ["//:__subpackages__"],
+)
+
+go_test(
+    name = "clusterharness_test",
+    srcs = ["clusterharness_test.go"],
+    embed = [":clusterharness"],
+)

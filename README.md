@@ -220,3 +220,38 @@ spec:
 `kubectl get wldr` shows the Service IP, untrusted pod count and readiness; `status.routes` lists what is served and `status.unroutedHostnames` lists hostnames with no matching `WeftTunnel`.
 
 Requires a weft image whose `weft proxy` supports `--tls-cert`/`--tls-key` (set `WEFT_IMAGE` on the operator to override `ghcr.io/aquaduct-dev/weft:latest`), and `WEFT_OPERATOR_IMAGE` (set by the chart) for the node agent.
+
+## End-to-end tests
+
+`e2e/` holds hermetic end-to-end tests that boot a single-node k3s inside an
+airgapped firecracker microVM (tooling in `tools/firecracker`, a copy of
+[rules_firecracker](https://github.com/aquaduct-dev/rules_firecracker) with
+the extra kernel netfilter options kube-proxy needs). Every image the VM needs is built or pinned by Bazel and
+preloaded, the operator is installed from the rendered chart, and weft is
+built from source (the `aquaduct_weft` dev dependency in `MODULE.bazel`).
+
+```bash
+bazel test --config=kvm //e2e/...
+```
+
+The host needs `/dev/kvm` (user in the `kvm` group), `firecracker` on `PATH`,
+and gcc/make/flex/bison/libelf-dev for the one-time guest kernel build.
+KVM-less hosts can skip these tests with `--test_tag_filters=-requires-kvm`.
+
+To test against an unpushed weft checkout, add to `.bazelrc.user`:
+
+```
+common --override_module=aquaduct_weft=/path/to/weft
+```
+
+`//e2e/reflector:reflector_test` proves a `WeftLocalDNSReflector` keeps
+traffic in the cluster. It publishes a registry as `registry.weft-e2e.test`,
+a name that cannot resolve except through the reflector, and checks that:
+
+- the trust gate holds DNS back while an older pod lacks the CA;
+- a pod resolves the name to the proxy and verifies its certificate with only the system trust store;
+- that pod pushes an image through the proxy;
+- containerd pulls the image back through the node agent's entries;
+- a plain process on the k3s node (outside any pod) resolves the name through the node's `/etc/hosts` and accepts the proxy certificate from the node's system trust store. A control run against the node's original bundle must be rejected as an unknown authority;
+- the registry's access log shows every request arriving from the proxy;
+- deleting the reflector removes everything it wrote, restoring the node trust store byte for byte.

@@ -38,8 +38,11 @@ jobs:
           bazelisk --version
 
       - name: Test all
+        # The firecracker e2e tests (tagged requires-kvm) need /dev/kvm and a
+        # host firecracker binary; run them locally with --config=kvm.
+        # --build_tests_only keeps CI from building their microVM images.
         run: |
-          bazelisk test --test_output=streamed //...
+          bazelisk test --test_output=streamed --build_tests_only --test_tag_filters=-requires-kvm //...
 
       - name: Save Bazel cache
         uses: actions/cache/save@v4

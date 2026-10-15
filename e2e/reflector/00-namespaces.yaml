@@ -1,0 +1,16 @@
+# Namespaces for the reflector e2e: the operator's, the backend the
+# reflector publishes, and the client workloads that use it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: weft-system
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: e2e-backend
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: e2e-client

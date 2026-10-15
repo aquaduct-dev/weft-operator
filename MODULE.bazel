@@ -1,5 +1,5 @@
 module(
-    name = "aquaduct_weft",
+    name = "weft_operator",
     version = "2025.11.14",
 )
 
@@ -92,4 +92,86 @@ http_file(
     name = "envtest_tgz",
     sha256 = "000c9adc2c140bed3f73e28caabdfa82d76d7c35c4b0cf93322d0fcbc1f28a070962e928c9132ea6b60c02ed677a7449cfab0b91134971419a21dab65ce5781e",
     url = "https://github.com/kubernetes-sigs/controller-tools/releases/download/envtest-v1.28.0/envtest-v1.28.0-linux-amd64.tar.gz",
+)
+
+# ---------------------------------------------------------------------------
+# e2e tests (//e2e/...): firecracker_k3s_test microVMs, see tools/firecracker.
+# Everything a test VM runs is pinned here: it is airgapped.
+# ---------------------------------------------------------------------------
+
+# weft itself, built from source so the e2e exercises the exact weft the
+# operator is released against (the reflector needs `weft proxy --tls-cert`).
+# Bump `commit` together with the weft release. To test an unpushed weft
+# checkout: --override_module=aquaduct_weft=$HOME/Documents/weft
+bazel_dep(name = "aquaduct_weft", version = "2025.11.14", dev_dependency = True)
+git_override(
+    module_name = "aquaduct_weft",
+    commit = "319fb9a89394fa3ed36736b2350d21c57cd06ddb",
+    remote = "https://github.com/aquaduct-dev/weft.git",
+)
+
+# Firecracker boot kernel source (Linux 6.1.155), built locally by
+# //tools/firecracker:vmlinux against tools/firecracker/vmlinux-6.1.config.
+http_file(
+    name = "firecracker_kernel_src",
+    downloaded_file_path = "linux.tar.xz",
+    sha256 = "c29387aeee085fbcbd91236224b9df805063bac43615e75cea2c6b29604a5c73",
+    urls = ["https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.1.155.tar.xz"],
+)
+
+# Statically-linked busybox for microVM rootfs/initramfs images.
+http_file(
+    name = "busybox_static_x86_64",
+    downloaded_file_path = "busybox",
+    sha256 = "6e123e7f3202a8c1e9b1f94d8941580a25135382b99e8d3e34fb858bba311348",
+    urls = ["https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox"],
+)
+
+# Statically-linked k3s that runs directly on the microVM rootfs.
+http_file(
+    name = "k3s_binary_x86_64",
+    downloaded_file_path = "k3s",
+    sha256 = "fb942b7870d9a88e10d063e9f52b99fa538becca761e2578887e04e5ce167e53",
+    urls = ["https://github.com/k3s-io/k3s/releases/download/v1.30.4+k3s1/k3s"],
+)
+
+# Gateway API CRDs; the operator refuses to start without them.
+http_file(
+    name = "gateway_api_experimental_install",
+    downloaded_file_path = "gateway-api-experimental-install.yaml",
+    sha256 = "0414b160767377e85fd362855501200c6b83b84758bcd532652e3fe1cc677e49",
+    urls = ["https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.0/experimental-install.yaml"],
+)
+
+# Mozilla's CA bundle (curl.se extract), installed in the e2e VM at the
+# Debian/Ubuntu path so the node has a real system trust store for the
+# reflector's node agent to extend, like a production node does.
+http_file(
+    name = "mozilla_ca_bundle",
+    downloaded_file_path = "cacert.pem",
+    sha256 = "a41b5d356aea97a529fe27e0f7316d2f9d946d75927476cf9cf1b90637d00505",
+    urls = ["https://curl.se/ca/cacert-2026-09-25.pem"],
+)
+
+# The CoreDNS image k3s v1.30.4 deploys (its Corefile imports
+# coredns-custom, as on lab0). Preloaded because the VM cannot pull.
+oci.pull(
+    name = "k3s_coredns",
+    digest = "sha256:a11fafae1f8037cbbd66c5afa40ba2423936b72b4fd50a7034a7e8b955163594",
+    image = "docker.io/rancher/mirrored-coredns-coredns",
+    platforms = ["linux/amd64"],
+)
+
+# Backend for the reflector e2e: a container registry, the same workload
+# the reflector exists to speed up.
+oci.pull(
+    name = "registry",
+    digest = "sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373",
+    image = "docker.io/library/registry",
+    platforms = ["linux/amd64"],
+)
+use_repo(
+    oci,
+    "k3s_coredns_linux_amd64",
+    "registry_linux_amd64",
 )

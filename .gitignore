@@ -2,3 +2,4 @@ bazel-out
 bazel-bin
 bazel-testlogs
 bazel-weft-operator
+.bazelrc.user

@@ -1,0 +1,178 @@
+# Firecracker microVM tooling. See defs.bzl for the public macro API.
+#
+# Imported from openfactory's //tools/firecracker (commit 194e70a9) so
+# weft-operator can run hermetic k3s-in-a-microVM e2e tests; the
+# openfactoryd-specific node-image builders were left behind. The same
+# rules now live upstream as github.com/aquaduct-dev/rules_firecracker:
+# once that carries the kernel netfilter options below, replace this copy
+# with bazel_dep(name = "rules_firecracker") + git_override. Run tests with
+#   bazel test --config=kvm //e2e/...
+# (the host needs /dev/kvm, `firecracker` on PATH, and gcc/make/flex/
+# bison/libelf-dev for the one-time kernel build).
+#
+# Divergence from openfactory: vmlinux-6.1.config here also enables the
+# netfilter matches/targets kube-proxy's iptables rules need (comment, mark,
+# statistic, multiport, REJECT, ...). Without them kube-proxy cannot program
+# any Service, so ClusterIPs (and therefore CoreDNS) never work in the VM.
+#
+# `vmlinux`        — the firecracker boot kernel (Linux 6.1.155), built
+#                    locally from the kernel.org source tarball pinned in
+#                    //MODULE.bazel against `vmlinux-6.1.config` (upstream
+#                    firecracker config + CONFIG_FUSE_FS=y). The build runs
+#                    out-of-sandbox (`local = True`) and uses the host
+#                    toolchain: gcc, make, bc, flex, bison, libelf-dev,
+#                    libssl-dev. ~5-10 min cold; bazel caches by
+#                    (tarball sha + config content) afterwards.
+# `busybox_static` — busybox 1.35.0 x86_64-musl from busybox.net, pinned by
+#                    sha256 in //MODULE.bazel. The chmod-+x wrapper genrule
+#                    is needed because http_file doesn't preserve the upstream
+#                    file mode (busybox.net serves the binary at 0664).
+# `mkinitramfs`    — sh_binary tool consumed by firecracker_initramfs.
+# `mkrootfs`       — sh_binary tool consumed by firecracker_rootfs.
+# `gen_test`       — sh_binary tool consumed by firecracker_test.
+
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+
+# ---------------------------------------------------------------------------
+# Multi-VM networking self-test (CRITERIA "No stub tests" amendment). Two of
+# these microVMs booted on a shared host bridge ping each other, proving the
+# runner's network-interface support end to end. Driven by the standalone
+# cluster orchestrator (cluster_run.sh) and, once wired, firecracker_cluster_test.
+# ---------------------------------------------------------------------------
+load(":defs.bzl", "firecracker_initramfs", "firecracker_microvm")
+
+genrule(
+    name = "vmlinux",
+    srcs = [
+        "@firecracker_kernel_src//file",
+        "vmlinux-6.1.config",
+    ],
+    outs = ["vmlinux.bin"],
+    cmd = (
+        "$(execpath build_kernel.sh) " +
+        "--tarball $(execpath @firecracker_kernel_src//file) " +
+        "--config $(execpath vmlinux-6.1.config) " +
+        "--out $@"
+    ),
+    # Host gcc/make/flex/bison/libelf — not hermetic.
+    local = True,
+    tools = ["build_kernel.sh"],
+    visibility = ["//visibility:public"],
+)
+
+genrule(
+    name = "busybox_static",
+    srcs = ["@busybox_static_x86_64//file"],
+    outs = ["busybox-static"],
+    cmd = "cp $< $@ && chmod +x $@",
+    visibility = ["//visibility:public"],
+)
+
+# Wrap the http_file-fetched k3s binary in a chmod-+x genrule (upstream
+# release asset has no executable bit) so callers can `execpath` it
+# directly into the firecracker rootfs.
+genrule(
+    name = "k3s_binary",
+    srcs = ["@k3s_binary_x86_64//file"],
+    outs = ["k3s"],
+    cmd = "cp $< $@ && chmod +x $@",
+    visibility = ["//visibility:public"],
+)
+
+sh_binary(
+    name = "mkinitramfs",
+    srcs = ["mkinitramfs.sh"],
+    visibility = ["//visibility:public"],
+)
+
+sh_binary(
+    name = "mkrootfs",
+    srcs = ["mkrootfs.sh"],
+    visibility = ["//visibility:public"],
+)
+
+sh_binary(
+    name = "mkcontainerfs",
+    srcs = ["mkcontainerfs.sh"],
+    visibility = ["//visibility:public"],
+)
+
+sh_binary(
+    name = "gen_test",
+    srcs = ["gen_test.sh"],
+    visibility = ["//visibility:public"],
+)
+
+sh_binary(
+    name = "mkk3srootfs",
+    srcs = ["mkk3srootfs.sh"],
+    visibility = ["//visibility:public"],
+)
+
+sh_binary(
+    name = "gen_k3s_test",
+    srcs = ["gen_k3s_test.sh"],
+    visibility = ["//visibility:public"],
+)
+
+exports_files(
+    [
+        "cluster_run.sh",
+        "cluster_install_test.sh.tpl",
+        "cluster_renumber_test.sh.tpl",
+        "cluster_test.sh.tpl",
+        "k3s_cluster_init.sh",
+        "k3s_init.sh",
+        "runner.sh.tpl",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+firecracker_initramfs(
+    name = "nettest_initrd",
+    init = "nettest_init.sh",
+    tags = ["manual"],
+    visibility = ["//visibility:public"],
+)
+
+firecracker_microvm(
+    name = "nettest_vm",
+    initrd = ":nettest_initrd",
+    kernel = ":vmlinux",
+    mem_mib = 128,
+    tags = ["manual"],
+    visibility = ["//visibility:public"],
+)
+
+# Real multi-node k3s cluster node: a rootfs running k3s server/agent on the
+# real eth0 (role from cmdline). Booted N-up by cluster_run.sh to form an
+# actual cluster over the shared bridge. (CRITERIA "No stub tests".)
+genrule(
+    name = "k3s_cluster_rootfs",
+    srcs = [
+        ":busybox_static",
+        ":k3s_binary",
+        "k3s_cluster_init.sh",
+    ],
+    outs = ["k3s_cluster_rootfs.ext4"],
+    cmd = "$(execpath :mkk3srootfs) --out $@ " +
+          "--busybox $(execpath :busybox_static) --k3s $(execpath :k3s_binary) " +
+          "--init $(execpath k3s_cluster_init.sh) " +
+          "--test-binary $(execpath :busybox_static) --test-binary-name dummytest " +
+          "--scenario cluster --size-mb 2048 --label k3scluster",
+    local = True,
+    tags = ["manual"],
+    tools = [":mkk3srootfs"],
+    visibility = ["//visibility:public"],
+)
+
+firecracker_microvm(
+    name = "k3s_cluster_vm",
+    kernel = ":vmlinux",
+    kernel_cmdline = "console=ttyS0 reboot=k panic=1 pci=off random.trust_cpu=on init=/sbin/init",
+    mem_mib = 1536,
+    rootfs = ":k3s_cluster_rootfs",
+    tags = ["manual"],
+    vcpus = 2,
+    visibility = ["//visibility:public"],
+)
