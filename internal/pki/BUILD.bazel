@@ -1,0 +1,20 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+filegroup(
+    name = "srcs",
+    srcs = glob(["*.go"]),
+    visibility = ["//visibility:public"],
+)
+
+go_library(
+    name = "pki",
+    srcs = ["pki.go"],
+    importpath = "aquaduct.dev/weft-operator/internal/pki",
+    visibility = ["//:__subpackages__"],
+)
+
+go_test(
+    name = "pki_test",
+    srcs = ["pki_test.go"],
+    embed = [":pki"],
+)

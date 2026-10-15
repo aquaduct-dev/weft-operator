@@ -180,3 +180,43 @@ spec:
     key: token
 ```
 
+
+### `WeftLocalDNSReflector`
+
+Traffic from inside the cluster to a public weft hostname normally hairpins: pod → bastion → WireGuard tunnel → back into the cluster. For bulk transfers (container image pushes and pulls against an in-cluster registry, for example) that round trip is the bottleneck. A `WeftLocalDNSReflector` keeps that traffic in the cluster.
+
+It is cluster-scoped. For each hostname in `spec.hostnames` it:
+
+1. Finds the `WeftTunnel`s whose `dstURL` has that host (including every tunnel a weft `Gateway` generates) and reuses their `srcURL` backends, so routing is defined once.
+2. Issues a self-signed CA (Secret `<name>-ca`) and a serving certificate for the hostnames (Secret `<name>-tls`), renewed automatically 30 days before expiry.
+3. Runs `weft proxy --tls-cert … --tls-key …` (Deployment and ClusterIP Service `<name>-proxy`, ports 443/80) serving those backends.
+4. **Makes clients trust the CA, with no change to any workload:**
+   - The operator publishes ConfigMap `weft-trust-bundle` in every namespace: the operator image's system roots plus every reflector CA.
+   - A mutating admission webhook (`weft-operator-trust-injector`, managed by the operator, `failurePolicy: Ignore`) injects it into every new pod. It mounts the bundle over `/etc/ssl/certs/ca-certificates.crt`, `/etc/pki/tls/certs/ca-bundle.crt` and `/etc/ssl/cert.pem`. That covers everything that reads the system trust store: Go, OpenSSL and GnuTLS (curl, git), Python's `ssl`. Container environment variables are never touched. Containers that mount their own `/etc/ssl` (or a parent of these paths) keep it.
+   - On every node, the node agent appends the CA to the host's CA bundle and to containerd's `certs.d/<hostname>/hosts.toml`.
+5. **Trust gate.** The webhook only sees pods as they are created. So while any running pod does not yet trust this CA (it predates the reflector, or was admitted while the webhook was down), steps 6 and 7 are held back and `status.untrustedPods` / `status.untrustedPodSample` name those pods. Restart them, or set `spec.ignoreUntrustedPods: true`. Turning a reflector on therefore never breaks a running pod; traffic keeps using the tunnel until it is safe.
+6. Once the proxy has an available replica and the gate is open, writes `<hostname>:53 { hosts { <service IP> <hostname> } }` blocks under key `weft-local-dns-reflector-<name>.server` in `kube-system/coredns-custom` (the k3s Corefile imports `*.server` from it). If either condition stops holding, the key is withdrawn and pods resolve the public address again.
+7. Under the same gate, runs the node agent DaemonSet (`<name>-node-agent`, the operator image's `node-agent` subcommand). Kubelet/containerd image pulls and host processes use the node's resolver, not CoreDNS, so the agent adds an `/etc/hosts` entry pointing at the Service IP, **only while a verified TLS handshake to the proxy succeeds**. It removes everything it wrote when stopped.
+
+Pods in `kube-system` and in the operator's namespace are never injected and are exempt from the gate. Opt a pod out with the label or annotation `weft.aquaduct.dev/inject-trust: "false"`. Runtimes that ignore the system store and ship their own CA list are not covered: Node.js, Python `requests` (certifi) and Java.
+
+#### Example
+
+```yaml
+apiVersion: weft.aquaduct.dev/v1alpha1
+kind: WeftLocalDNSReflector
+metadata:
+  name: weft-local
+spec:
+  hostnames:
+    - gitea.example.com
+  # Defaults shown:
+  # namespace: weft-system
+  # replicas: 1
+  # clusterDNS: {configMapNamespace: kube-system, configMapName: coredns-custom}
+  # nodeTrust: {containerdCertsDir: /var/lib/rancher/k3s/agent/etc/containerd/certs.d}
+```
+
+`kubectl get wldr` shows the Service IP, untrusted pod count and readiness; `status.routes` lists what is served and `status.unroutedHostnames` lists hostnames with no matching `WeftTunnel`.
+
+Requires a weft image whose `weft proxy` supports `--tls-cert`/`--tls-key` (set `WEFT_IMAGE` on the operator to override `ghcr.io/aquaduct-dev/weft:latest`), and `WEFT_OPERATOR_IMAGE` (set by the chart) for the node agent.

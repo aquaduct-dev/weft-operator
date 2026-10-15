@@ -1,0 +1,18 @@
+# Service the API server calls for the trust injection webhook (a
+# MutatingWebhookConfiguration the operator manages itself, so its caBundle
+# always matches the certificate the operator serves).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "weft-operator.fullname" . }}-webhook
+  labels:
+    {{- include "weft-operator.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "weft-operator.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: webhook
+      port: 443
+      targetPort: webhook
+      protocol: TCP

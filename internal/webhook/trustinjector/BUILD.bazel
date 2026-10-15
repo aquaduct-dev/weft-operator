@@ -1,0 +1,49 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+filegroup(
+    name = "srcs",
+    srcs = glob(["*.go"]),
+    visibility = ["//visibility:public"],
+)
+
+go_library(
+    name = "trustinjector",
+    srcs = [
+        "handler.go",
+        "setup.go",
+    ],
+    importpath = "aquaduct.dev/weft-operator/internal/webhook/trustinjector",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/pki",
+        "//internal/trust",
+        "@io_k8s_api//admissionregistration/v1:admissionregistration",
+        "@io_k8s_api//core/v1:core",
+        "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
+        "@io_k8s_sigs_controller_runtime//pkg/client",
+        "@io_k8s_sigs_controller_runtime//pkg/controller/controllerutil",
+        "@io_k8s_sigs_controller_runtime//pkg/log",
+        "@io_k8s_sigs_controller_runtime//pkg/webhook/admission",
+    ],
+)
+
+go_test(
+    name = "trustinjector_test",
+    srcs = ["trustinjector_test.go"],
+    embed = [":trustinjector"],
+    deps = [
+        "//api/v1alpha1",
+        "//internal/pki",
+        "//internal/trust",
+        "@io_k8s_api//admission/v1:admission",
+        "@io_k8s_api//admissionregistration/v1:admissionregistration",
+        "@io_k8s_api//core/v1:core",
+        "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
+        "@io_k8s_apimachinery//pkg/runtime",
+        "@io_k8s_apimachinery//pkg/types",
+        "@io_k8s_client_go//kubernetes/scheme",
+        "@io_k8s_sigs_controller_runtime//pkg/client",
+        "@io_k8s_sigs_controller_runtime//pkg/client/fake",
+        "@io_k8s_sigs_controller_runtime//pkg/webhook/admission",
+    ],
+)

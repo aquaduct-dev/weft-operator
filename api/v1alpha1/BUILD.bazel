@@ -8,9 +8,13 @@ controller_gen(
         "//internal/controller/aquaducttaas:srcs",
         "//internal/controller/dnsrecord:srcs",
         "//internal/controller/weftgateway:srcs",
+        "//internal/controller/weftlocaldnsreflector:srcs",
         "//internal/controller/weftserver:srcs",
         "//internal/controller/wefttunnel:srcs",
+        "//internal/pki:srcs",
         "//internal/resource:srcs",
+        "//internal/trust:srcs",
+        "//internal/webhook/trustinjector:srcs",
     ],
     visibility = ["//visibility:public"],
 )
@@ -31,6 +35,7 @@ go_library(
         "dnsrecord_types.go",
         "groupversion_info.go",
         "weftgateway_types.go",
+        "weftlocaldnsreflector_types.go",
         "weftserver_types.go",
         "wefttunnel_types.go",
         ":generated.deepcopy",  # keep

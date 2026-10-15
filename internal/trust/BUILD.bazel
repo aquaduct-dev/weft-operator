@@ -1,0 +1,38 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+filegroup(
+    name = "srcs",
+    srcs = glob(["*.go"]),
+    visibility = ["//visibility:public"],
+)
+
+go_library(
+    name = "trust",
+    srcs = [
+        "bundle.go",
+        "inject.go",
+    ],
+    importpath = "aquaduct.dev/weft-operator/internal/trust",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//api/v1alpha1",
+        "//internal/pki",
+        "@io_k8s_api//core/v1:core",
+        "@io_k8s_apimachinery//pkg/api/errors",
+        "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
+        "@io_k8s_apimachinery//pkg/types",
+        "@io_k8s_sigs_controller_runtime//pkg/client",
+        "@io_k8s_sigs_controller_runtime//pkg/controller/controllerutil",
+    ],
+)
+
+go_test(
+    name = "trust_test",
+    srcs = ["trust_test.go"],
+    embed = [":trust"],
+    deps = [
+        "//internal/pki",
+        "@io_k8s_api//core/v1:core",
+        "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
+    ],
+)

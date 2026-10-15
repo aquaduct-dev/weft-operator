@@ -35,6 +35,29 @@ spec:
             - "--health-probe-bind-address=:8081"
             - "--metrics-bind-address=127.0.0.1:8080"
             - "--leader-elect"
+          env:
+            # WeftLocalDNSReflector runs this same image as its node agent.
+            - name: WEFT_OPERATOR_IMAGE
+              value: "{{ .Values.image.url }}"
+            # Image for the reflector proxies (`weft proxy`).
+            - name: WEFT_IMAGE
+              value: "{{ .Values.weftImage }}"
+            # The trust injection webhook is reached through this Service.
+            - name: WEBHOOK_SERVICE_NAME
+              value: {{ include "weft-operator.fullname" . }}-webhook
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          ports:
+            - name: webhook
+              containerPort: 9443
+              protocol: TCP
+          volumeMounts:
+            # Writable dir for the webhook serving certificate (the root
+            # filesystem is read-only).
+            - name: webhook-certs
+              mountPath: /tmp/k8s-webhook-server/serving-certs
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           livenessProbe:
@@ -49,6 +72,9 @@ spec:
               port: 8081
             initialDelaySeconds: 5
             periodSeconds: 10
+      volumes:
+        - name: webhook-certs
+          emptyDir: {}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

@@ -1,0 +1,23 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "nodeagent",
+    srcs = [
+        "agent.go",
+        "certsd.go",
+        "hostsfile.go",
+    ],
+    importpath = "aquaduct.dev/weft-operator/internal/nodeagent",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "@com_github_go_logr_logr//:logr",
+        "@io_k8s_sigs_controller_runtime//pkg/log/zap",
+    ],
+)
+
+go_test(
+    name = "nodeagent_test",
+    srcs = ["agent_test.go"],
+    embed = [":nodeagent"],
+    deps = ["@io_k8s_sigs_controller_runtime//pkg/log/zap"],
+)

@@ -4,6 +4,9 @@ image:
   url: {@//cmd:weft_operator_image_push}
   pullPolicy: Always
 
+# weft image run by WeftLocalDNSReflector proxies (needs `weft proxy --tls-cert`).
+weftImage: ghcr.io/aquaduct-dev/weft:latest
+
 imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""

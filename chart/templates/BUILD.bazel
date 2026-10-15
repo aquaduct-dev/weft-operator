@@ -17,6 +17,7 @@ exports_files([
     "vpa-rbac.yaml",
     "vpa-controllers.yaml",
     "vpa-certs.yaml",
+    "webhook-service.yaml",
 ])
 
 filegroup(
