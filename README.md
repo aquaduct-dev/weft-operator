@@ -185,7 +185,7 @@ spec:
 
 Traffic from inside the cluster to a public weft hostname normally hairpins: pod → bastion → WireGuard tunnel → back into the cluster. For bulk transfers (container image pushes and pulls against an in-cluster registry, for example) that round trip is the bottleneck. A `WeftLocalDNSReflector` keeps that traffic in the cluster.
 
-It is cluster-scoped. For each hostname in `spec.hostnames` it:
+It is cluster-scoped. It serves either the hostnames listed in `spec.hostnames` or, with `spec.allHostnames: true`, every http/https hostname any `WeftTunnel` serves. Two reflectors never serve the same hostname. An explicit `hostnames` entry beats `allHostnames`, the oldest claim wins among equals, and the loser lists the hostname in `status.conflictingHostnames`. For each hostname it serves, it:
 
 1. Finds the `WeftTunnel`s whose `dstURL` has that host (including every tunnel a weft `Gateway` generates) and reuses their `srcURL` backends, so routing is defined once.
 2. Issues a self-signed CA (Secret `<name>-ca`) and a serving certificate for the hostnames (Secret `<name>-tls`), renewed automatically 30 days before expiry.
@@ -199,6 +199,19 @@ It is cluster-scoped. For each hostname in `spec.hostnames` it:
 7. Under the same gate, runs the node agent DaemonSet (`<name>-node-agent`, the operator image's `node-agent` subcommand). Kubelet/containerd image pulls and host processes use the node's resolver, not CoreDNS, so the agent adds an `/etc/hosts` entry pointing at the Service IP, **only while a verified TLS handshake to the proxy succeeds**. It removes everything it wrote when stopped.
 
 Pods in `kube-system` and in the operator's namespace are never injected and are exempt from the gate. Opt a pod out with the label or annotation `weft.aquaduct.dev/inject-trust: "false"`. Runtimes that ignore the system store and ship their own CA list are not covered: Node.js, Python `requests` (certifi) and Java.
+
+#### The cluster-default reflector
+
+By default the operator creates and keeps a reflector named `cluster-default` with `allHostnames: true`. Every hostname published through weft is then served in-cluster with no per-cluster setup. Chart values:
+
+```yaml
+defaultReflector:
+  enabled: true          # false: the operator deletes the reflector it created
+  name: cluster-default
+  hostnames: []          # empty = allHostnames; or an explicit list
+```
+
+The operator only ever modifies or deletes a reflector carrying its `weft.aquaduct.dev/default-reflector: "true"` label, so a hand-made reflector with the same name is left alone. Hand-made reflectors with explicit hostnames take precedence over the default one.
 
 #### Example
 
@@ -243,6 +256,8 @@ To test against an unpushed weft checkout, add to `.bazelrc.user`:
 ```
 common --override_module=aquaduct_weft=/path/to/weft
 ```
+
+`//e2e/reflector:default_reflector_test` installs the chart with its default values and checks that the operator's `cluster-default` reflector serves a tunnelled hostname in-cluster with no reflector created by hand. It then re-applies the chart with `defaultReflector.enabled=false` and checks that the reflector, its DNS override and its node entries are removed.
 
 `//e2e/reflector:reflector_test` proves a `WeftLocalDNSReflector` keeps
 traffic in the cluster. It publishes a registry as `registry.weft-e2e.test`,

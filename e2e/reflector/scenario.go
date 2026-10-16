@@ -55,18 +55,24 @@ const (
 	// reflector exists, used for the control run and the teardown check.
 	nodeCABundle     = "/etc/ssl/certs/ca-certificates.crt"
 	pristineCABundle = "/tmp/pristine-ca-certificates.crt"
-	// caBlockMarker starts the node agent's managed block in the bundle.
-	caBlockMarker = "# BEGIN weft-local-dns-reflector " + reflectorName + " CA"
 )
 
 type scenario struct {
 	kubeconfig string
-	c          client.Client
-	clientset  *kubernetes.Clientset
+	// refl is the reflector under test: "e2e" (created by the scenario) or
+	// the operator's cluster-default one.
+	refl      string
+	c         client.Client
+	clientset *kubernetes.Clientset
 
 	// Filled in as the scenario progresses.
 	serviceIP     string
 	caFingerprint string
+}
+
+// caBlockMarker starts the node agent's managed block in the node bundle.
+func (s *scenario) caBlockMarker() string {
+	return "# BEGIN weft-local-dns-reflector " + s.refl + " CA"
 }
 
 func newScenario(kubeconfig string) (*scenario, error) {
@@ -89,7 +95,7 @@ func newScenario(kubeconfig string) (*scenario, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &scenario{kubeconfig: kubeconfig, c: c, clientset: cs}, nil
+	return &scenario{kubeconfig: kubeconfig, refl: reflectorName, c: c, clientset: cs}, nil
 }
 
 type step struct {
@@ -97,8 +103,9 @@ type step struct {
 	fn        func(context.Context) error
 }
 
-func (s *scenario) run(ctx context.Context) []clusterharness.ReportPC {
-	steps := []step{
+// reflectorSteps exercise an explicitly created reflector end to end.
+func (s *scenario) reflectorSteps() []step {
+	return []step{
 		{"e2e.operator-ready", "operator installed from the chart and webhook registered", s.installOperator},
 		{"e2e.backend-ready", "registry backend running", s.deployBackend},
 		{"e2e.unresolvable-before", "hostname does not resolve without the reflector", s.checkUnresolvable},
@@ -110,6 +117,11 @@ func (s *scenario) run(ctx context.Context) []clusterharness.ReportPC {
 		{"e2e.traffic-internal", "every registry request arrived from the reflector proxy", s.checkTrafficInternal},
 		{"e2e.teardown", "deleting the reflector removes DNS, node entries and the node trust store CA", s.checkTeardown},
 	}
+}
+
+// run executes steps in order; a failed step stops the run (later steps
+// depend on it) and dumps diagnostics.
+func (s *scenario) run(ctx context.Context, steps []step) []clusterharness.ReportPC {
 	var pcs []clusterharness.ReportPC
 	failed := ""
 	for _, st := range steps {
@@ -219,21 +231,15 @@ func (s *scenario) checkUnresolvable(ctx context.Context) error {
 }
 
 func (s *scenario) createReflectorAndCheckGate(ctx context.Context) error {
-	tunnel := &weftv1alpha1.WeftTunnel{
-		ObjectMeta: metav1.ObjectMeta{Namespace: backendNS, Name: "registry"},
-		Spec: weftv1alpha1.WeftTunnelSpec{
-			SrcURL: "http://registry." + backendNS + ".svc:5000",
-			DstURL: "https://" + hostname + "/",
-		},
+	if err := s.createTunnel(ctx); err != nil {
+		return err
 	}
 	refl := &weftv1alpha1.WeftLocalDNSReflector{
-		ObjectMeta: metav1.ObjectMeta{Name: reflectorName},
+		ObjectMeta: metav1.ObjectMeta{Name: s.refl},
 		Spec:       weftv1alpha1.WeftLocalDNSReflectorSpec{Hostnames: []string{hostname}},
 	}
-	for _, o := range []client.Object{tunnel, refl} {
-		if err := s.c.Create(ctx, o); err != nil {
-			return fmt.Errorf("create %T: %w", o, err)
-		}
+	if err := s.c.Create(ctx, refl); err != nil {
+		return fmt.Errorf("create reflector: %w", err)
 	}
 
 	// The registry pod predates the reflector, so it does not trust the
@@ -254,19 +260,32 @@ func (s *scenario) createReflectorAndCheckGate(ctx context.Context) error {
 	if s.coreDNSHasOverride(ctx) {
 		return fmt.Errorf("CoreDNS override published while an untrusted pod is running")
 	}
-	err := s.c.Get(ctx, types.NamespacedName{Namespace: operatorNS, Name: reflectorName + "-node-agent"}, &appsv1.DaemonSet{})
+	err := s.c.Get(ctx, types.NamespacedName{Namespace: operatorNS, Name: s.refl + "-node-agent"}, &appsv1.DaemonSet{})
 	if !apierrors.IsNotFound(err) {
 		return fmt.Errorf("node agent deployed while an untrusted pod is running (get err=%v)", err)
 	}
-	if bundle, _ := os.ReadFile(nodeCABundle); strings.Contains(string(bundle), caBlockMarker) {
+	if bundle, _ := os.ReadFile(nodeCABundle); strings.Contains(string(bundle), s.caBlockMarker()) {
 		return fmt.Errorf("node trust store changed while an untrusted pod is running")
 	}
 	return nil
 }
 
+// createTunnel publishes the registry as https://registry.weft-e2e.test the
+// way a weft Gateway would: as a WeftTunnel (no WeftServer, so nothing ever
+// leaves the VM).
+func (s *scenario) createTunnel(ctx context.Context) error {
+	return s.c.Create(ctx, &weftv1alpha1.WeftTunnel{
+		ObjectMeta: metav1.ObjectMeta{Namespace: backendNS, Name: "registry"},
+		Spec: weftv1alpha1.WeftTunnelSpec{
+			SrcURL: "http://registry." + backendNS + ".svc:5000",
+			DstURL: "https://" + hostname + "/",
+		},
+	})
+}
+
 func (s *scenario) restartBackendAndWaitReady(ctx context.Context) error {
 	secret := &corev1.Secret{}
-	if err := s.c.Get(ctx, types.NamespacedName{Namespace: operatorNS, Name: reflectorName + "-ca"}, secret); err != nil {
+	if err := s.c.Get(ctx, types.NamespacedName{Namespace: operatorNS, Name: s.refl + "-ca"}, secret); err != nil {
 		return fmt.Errorf("get reflector CA: %w", err)
 	}
 	s.caFingerprint = pki.Fingerprint(secret.Data[corev1.TLSCertKey])
@@ -370,7 +389,7 @@ func (s *scenario) checkNodeHostPath(ctx context.Context) error {
 			return false, "", err
 		}
 		pristine, _ := os.ReadFile(pristineCABundle)
-		have := strings.Contains(string(bundle), caBlockMarker)
+		have := strings.Contains(string(bundle), s.caBlockMarker())
 		kept := strings.HasPrefix(string(bundle), strings.TrimRight(string(pristine), "\n"))
 		return have && kept, fmt.Sprintf("ca-block=%v original-roots-kept=%v certs=%d", have, kept, pki.CountCerts(bundle)), nil
 	}); err != nil {
@@ -406,7 +425,7 @@ var accessLogPeer = regexp.MustCompile(`(?m)^(\d+\.\d+\.\d+\.\d+) - - \[[^\]]*\]
 func (s *scenario) checkTrafficInternal(ctx context.Context) error {
 	proxyIPs := map[string]bool{}
 	pods := &corev1.PodList{}
-	if err := s.c.List(ctx, pods, client.InNamespace(operatorNS), client.MatchingLabels{"weft.aquaduct.dev/reflector": reflectorName, "app.kubernetes.io/component": "proxy"}); err != nil {
+	if err := s.c.List(ctx, pods, client.InNamespace(operatorNS), client.MatchingLabels{"weft.aquaduct.dev/reflector": s.refl, "app.kubernetes.io/component": "proxy"}); err != nil {
 		return err
 	}
 	for _, p := range pods.Items {
@@ -482,7 +501,7 @@ func (s *scenario) checkTeardown(ctx context.Context) error {
 
 func (s *scenario) reflector(ctx context.Context) (*weftv1alpha1.WeftLocalDNSReflector, error) {
 	r := &weftv1alpha1.WeftLocalDNSReflector{}
-	err := s.c.Get(ctx, types.NamespacedName{Name: reflectorName}, r)
+	err := s.c.Get(ctx, types.NamespacedName{Name: s.refl}, r)
 	return r, err
 }
 
@@ -491,7 +510,7 @@ func (s *scenario) coreDNSHasOverride(ctx context.Context) bool {
 	if err := s.c.Get(ctx, types.NamespacedName{Namespace: "kube-system", Name: "coredns-custom"}, cm); err != nil {
 		return false
 	}
-	_, ok := cm.Data["weft-local-dns-reflector-"+reflectorName+".server"]
+	_, ok := cm.Data["weft-local-dns-reflector-"+s.refl+".server"]
 	return ok
 }
 

@@ -29,17 +29,24 @@ import (
 )
 
 // WeftLocalDNSReflectorSpec defines the desired state of a WeftLocalDNSReflector.
+// +kubebuilder:validation:XValidation:rule="(has(self.allHostnames) && self.allHostnames) != (has(self.hostnames) && size(self.hostnames) > 0)",message="set exactly one of hostnames or allHostnames"
 type WeftLocalDNSReflectorSpec struct {
 	// Hostnames are the public hostnames whose traffic should stay inside the
 	// cluster. Each one is served using the backends of the WeftTunnels whose
 	// dstURL has that host (which includes every tunnel a weft Gateway
 	// generates), so routing is never configured twice. A hostname with no
-	// matching WeftTunnel is left alone and reported in status.
-	//+kubebuilder:validation:MinItems=1
+	// matching WeftTunnel is left alone and reported in status. Mutually
+	// exclusive with allHostnames.
 	//+kubebuilder:validation:MaxItems=64
 	//+kubebuilder:validation:items:Pattern=`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?(\.[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)+$`
 	//+kubebuilder:validation:items:MaxLength=253
-	Hostnames []string `json:"hostnames"`
+	Hostnames []string `json:"hostnames,omitempty"`
+
+	// AllHostnames reflects every http/https hostname served by a WeftTunnel
+	// anywhere in the cluster, instead of an explicit list. A hostname that
+	// another reflector lists explicitly is left to that reflector. The
+	// operator's cluster-default reflector uses this mode.
+	AllHostnames bool `json:"allHostnames,omitempty"`
 
 	// Namespace holds the proxy Deployment, its Service, the node agent
 	// DaemonSet and the CA/serving-certificate Secrets.
@@ -124,6 +131,16 @@ type WeftLocalDNSReflectorStatus struct {
 	// get no DNS override and keep resolving publicly.
 	UnroutedHostnames []string `json:"unroutedHostnames,omitempty"`
 
+	// ReflectedHostnames are the hostnames this reflector currently claims:
+	// its certificate covers them and it serves any that are routed.
+	ReflectedHostnames []string `json:"reflectedHostnames,omitempty"`
+
+	// ConflictingHostnames are hostnames this reflector would claim but
+	// another reflector owns. An explicit list beats allHostnames, and among
+	// explicit claims the oldest reflector wins, so two reflectors never
+	// serve one hostname (CoreDNS rejects duplicate zones).
+	ConflictingHostnames []string `json:"conflictingHostnames,omitempty"`
+
 	// CABundleConfigMap is the trust bundle ConfigMap published in every
 	// namespace and injected into new pods.
 	CABundleConfigMap string `json:"caBundleConfigMap,omitempty"`
@@ -154,6 +171,7 @@ type WeftLocalDNSReflectorStatus struct {
 //+kubebuilder:subresource:status
 //+kubebuilder:resource:scope=Cluster,shortName=wldr
 //+kubebuilder:printcolumn:name="Service IP",type=string,JSONPath=`.status.serviceIP`
+//+kubebuilder:printcolumn:name="All",type=boolean,JSONPath=`.spec.allHostnames`
 //+kubebuilder:printcolumn:name="Untrusted Pods",type=integer,JSONPath=`.status.untrustedPods`
 //+kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 //+kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`

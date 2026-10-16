@@ -21,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	weftv1alpha1 "aquaduct.dev/weft-operator/api/v1alpha1"
+	"aquaduct.dev/weft-operator/internal/controller/weftlocaldnsreflector"
 	"aquaduct.dev/weft-operator/internal/pki"
 	"aquaduct.dev/weft-operator/internal/trust"
 )
@@ -291,6 +292,87 @@ var _ = Describe("WeftLocalDNSReflector", func() {
 		GinkgoWriter.Printf("accepted mounts for a: %v\n", got.Spec.Containers[0].VolumeMounts)
 		Expect(got.Spec.Containers[0].VolumeMounts).To(HaveLen(len(trust.SystemBundlePaths)))
 		Expect(got.Spec.Containers[0].Env).To(BeEmpty())
+	})
+
+	It("requires exactly one of hostnames or allHostnames", func() {
+		for name, spec := range map[string]weftv1alpha1.WeftLocalDNSReflectorSpec{
+			"neither": {},
+			"both":    {AllHostnames: true, Hostnames: []string{"a.example.test"}},
+		} {
+			err := k8sClient.Create(ctx, &weftv1alpha1.WeftLocalDNSReflector{ObjectMeta: metav1.ObjectMeta{Name: "oneof-" + name}, Spec: spec})
+			GinkgoWriter.Printf("%s -> %v\n", name, err)
+			Expect(apierrors.IsInvalid(err)).To(BeTrue(), "%s should be rejected", name)
+		}
+	})
+
+	It("keeps a cluster-default allHostnames reflector that yields to explicit claims", func() {
+		ensureNamespace("weft-system")
+		ensureNamespace("auto")
+		Expect(k8sClient.Create(ctx, &weftv1alpha1.WeftTunnel{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "auto", Name: "gw-auto"},
+			Spec:       weftv1alpha1.WeftTunnelSpec{SrcURL: "http://web.auto.svc:80", DstURL: "https://auto.example.test/"},
+		})).To(Succeed())
+
+		def := &weftlocaldnsreflector.DefaultReflector{Client: k8sClient, Enabled: true, Name: "cluster-default"}
+		Expect(def.Sync(ctx)).To(Succeed())
+		got := &weftv1alpha1.WeftLocalDNSReflector{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "cluster-default"}, got)).To(Succeed())
+		Expect(got.Spec.AllHostnames).To(BeTrue())
+		Expect(got.Labels).To(HaveKeyWithValue(weftlocaldnsreflector.DefaultReflectorLabel, "true"))
+
+		reflected := func(name string) func() []string {
+			return func() []string {
+				r := &weftv1alpha1.WeftLocalDNSReflector{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: name}, r); err != nil {
+					return nil
+				}
+				return r.Status.ReflectedHostnames
+			}
+		}
+		By("claiming every tunnelled hostname")
+		Eventually(reflected("cluster-default"), timeout, interval).Should(ContainElement("auto.example.test"))
+
+		By("yielding a hostname another reflector lists explicitly, and reclaiming it afterwards")
+		explicit := &weftv1alpha1.WeftLocalDNSReflector{
+			ObjectMeta: metav1.ObjectMeta{Name: "explicit"},
+			Spec:       weftv1alpha1.WeftLocalDNSReflectorSpec{Hostnames: []string{"auto.example.test"}},
+		}
+		Expect(k8sClient.Create(ctx, explicit)).To(Succeed())
+		Eventually(reflected("explicit"), timeout, interval).Should(Equal([]string{"auto.example.test"}))
+		Eventually(reflected("cluster-default"), timeout, interval).ShouldNot(ContainElement("auto.example.test"))
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "cluster-default"}, got)).To(Succeed())
+		Expect(got.Status.ConflictingHostnames).To(ContainElement("auto.example.test"))
+		Expect(k8sClient.Delete(ctx, explicit)).To(Succeed())
+		Eventually(reflected("cluster-default"), timeout, interval).Should(ContainElement("auto.example.test"))
+
+		By("following configured hostnames")
+		def.Hostnames = []string{"only.example.test"}
+		Expect(def.Sync(ctx)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "cluster-default"}, got)).To(Succeed())
+		Expect(got.Spec.AllHostnames).To(BeFalse())
+		Expect(got.Spec.Hostnames).To(Equal([]string{"only.example.test"}))
+
+		By("deleting it when disabled")
+		def.Enabled = false
+		Expect(def.Sync(ctx)).To(Succeed())
+		Eventually(func() bool {
+			return apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: "cluster-default"}, &weftv1alpha1.WeftLocalDNSReflector{}))
+		}, timeout, interval).Should(BeTrue())
+
+		By("never touching a hand-made reflector with the default name")
+		hand := &weftv1alpha1.WeftLocalDNSReflector{
+			ObjectMeta: metav1.ObjectMeta{Name: "hand-made"},
+			Spec:       weftv1alpha1.WeftLocalDNSReflectorSpec{Hostnames: []string{"hand.example.test"}},
+		}
+		Expect(k8sClient.Create(ctx, hand)).To(Succeed())
+		for _, enabled := range []bool{false, true} {
+			Expect((&weftlocaldnsreflector.DefaultReflector{Client: k8sClient, Enabled: enabled, Name: "hand-made"}).Sync(ctx)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "hand-made"}, got)).To(Succeed())
+			Expect(got.DeletionTimestamp).To(BeNil())
+			Expect(got.Spec.AllHostnames).To(BeFalse())
+			Expect(got.Spec.Hostnames).To(Equal([]string{"hand.example.test"}))
+		}
+		Expect(k8sClient.Delete(ctx, hand)).To(Succeed())
 	})
 
 	It("rejects hostnames CoreDNS could misread", func() {

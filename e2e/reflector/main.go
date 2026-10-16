@@ -1,10 +1,11 @@
 // Command reflectore2e is the guest side of the WeftLocalDNSReflector e2e
-// test (//e2e/reflector:reflector_test). It is one static binary with three
-// modes:
+// tests (//e2e/reflector:reflector_test, :default_reflector_test). It is one
+// static binary with three modes:
 //
 //   - (default) scenario: runs on the firecracker microVM next to k3s,
-//     drives the whole scenario through the API server and writes a
-//     clusterharness report (scenario.go);
+//     drives a scenario through the API server and writes a clusterharness
+//     report. The scenario name comes from --scenario: "reflector"
+//     (scenario.go) or "default-reflector" (default_scenario.go);
 //   - "client": runs inside a pod and does what a real workload would:
 //     resolve the reflected hostname, make a TLS-verified HTTPS request using
 //     nothing but the system trust store, and push an image (client.go);
@@ -18,6 +19,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"aquaduct.dev/weft-operator/internal/clusterharness"
@@ -48,12 +51,18 @@ func runScenario() int {
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Minute)
 	defer cancel()
 
-	report := &clusterharness.Report{Scenario: "reflector"}
+	// The VM init passes --scenario=/etc/manifests/<scenario>.yaml.
+	name := strings.TrimSuffix(filepath.Base(scenarioPath), ".yaml")
+	report := &clusterharness.Report{Scenario: name}
 	s, err := newScenario(kubeconfig)
-	if err != nil {
+	switch {
+	case err != nil:
 		report.PassConditions = []clusterharness.ReportPC{{ID: "e2e.setup", Label: "kube-client", Error: err.Error()}}
-	} else {
-		report.PassConditions = s.run(ctx)
+	case name == "default-reflector":
+		s.refl = defaultReflectorName
+		report.PassConditions = s.run(ctx, s.defaultReflectorSteps())
+	default:
+		report.PassConditions = s.run(ctx, s.reflectorSteps())
 	}
 	if err := clusterharness.WriteReportJSON(reportPath, report); err != nil {
 		log.Printf("write report: %v", err)

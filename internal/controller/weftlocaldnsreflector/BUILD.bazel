@@ -10,7 +10,9 @@ go_library(
     name = "weftlocaldnsreflector",
     srcs = [
         "certs.go",
+        "claims.go",
         "coredns.go",
+        "default.go",
         "names.go",
         "reconciler.go",
         "routes.go",

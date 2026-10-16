@@ -1,0 +1,3 @@
+# Turns off the operator's cluster-default WeftLocalDNSReflector.
+defaultReflector:
+  enabled: false

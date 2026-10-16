@@ -24,6 +24,7 @@ go_library(
     name = "reflector_lib",
     srcs = [
         "client.go",
+        "default_scenario.go",
         "kube.go",
         "main.go",
         "scenario.go",
@@ -139,6 +140,20 @@ helm_template(
     values = ["e2e-values.yaml"],
 )
 
+# The same, with the operator's cluster-default reflector switched off.
+helm_template(
+    name = "operator_manifest_no_default",
+    chart = "//chart:weft_operator",
+    opts = [
+        "--namespace=weft-system",
+        "--name-template=weft-operator",
+    ],
+    values = [
+        "e2e-values.yaml",
+        "no-default-reflector.yaml",
+    ],
+)
+
 # The node's system trust store (the VM rootfs otherwise has none). Copied
 # into bazel-out: external-repo files can vanish between invocations.
 genrule(
@@ -163,7 +178,8 @@ firecracker_k3s_test(
     extra_files = {
         ":gateway_api_crds": "/etc/e2e/gateway-api-crds.yaml",
         ":node_ca_bundle": "/etc/ssl/certs/ca-certificates.crt",
-        ":operator_manifest": "/etc/e2e/weft-operator.yaml",
+        # A hand-made reflector is the subject here; keep the default off.
+        ":operator_manifest_no_default": "/etc/e2e/weft-operator.yaml",
     },
     extra_images = {
         ":pause_tar": "pause.tar",
@@ -178,6 +194,36 @@ firecracker_k3s_test(
     },
     mem_mib = 4096,
     scenario = "reflector",
+    size_mb = 8192,
+    test_binary = ":reflectore2e",
+    timeout_seconds = 1800,
+    vcpus = 4,
+)
+
+# The chart's defaults: the operator must create a cluster-default
+# allHostnames reflector that serves a tunnelled hostname with nobody
+# creating a reflector, and remove it again when the chart value turns it off.
+firecracker_k3s_test(
+    name = "default_reflector_test",
+    extra_files = {
+        ":gateway_api_crds": "/etc/e2e/gateway-api-crds.yaml",
+        ":node_ca_bundle": "/etc/ssl/certs/ca-certificates.crt",
+        ":operator_manifest": "/etc/e2e/weft-operator.yaml",
+        ":operator_manifest_no_default": "/etc/e2e/weft-operator-default-disabled.yaml",
+    },
+    extra_images = {
+        ":pause_tar": "pause.tar",
+        ":coredns_tar": "coredns.tar",
+        ":registry_tar": "registry.tar",
+        ":operator_tar": "operator.tar",
+        ":weft_tar": "weft.tar",
+        ":client_tar": "client.tar",
+    },
+    extra_manifests = {
+        "00-namespaces.yaml": "00-namespaces.yaml",
+    },
+    mem_mib = 4096,
+    scenario = "default-reflector",
     size_mb = 8192,
     test_binary = ":reflectore2e",
     timeout_seconds = 1800,

@@ -5,6 +5,7 @@ package weftlocaldnsreflector
 import (
 	"strings"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -111,6 +112,7 @@ func TestRenderCoreDNS(t *testing.T) {
 		{"10.0.0.1", []string{"gitea.lab0.us {\n}"}},
 		{"10.0.0.1", []string{"*.lab0.us"}},
 		{"10.0.0.1", []string{"localhost"}},
+		{"10.0.0.1", []string{"10.0.0.2"}},
 	} {
 		if _, err := renderCoreDNS("lab0", bad.ip, bad.hosts); err == nil {
 			t.Errorf("render(%q, %q) should fail", bad.ip, bad.hosts)
@@ -130,5 +132,53 @@ func TestPullPolicy(t *testing.T) {
 		if got := string(pullPolicy(image)); got != want {
 			t.Errorf("pullPolicy(%q) = %s, want %s", image, got, want)
 		}
+	}
+}
+
+func reflector(name string, age int, all bool, hosts ...string) weftv1alpha1.WeftLocalDNSReflector {
+	return weftv1alpha1.WeftLocalDNSReflector{
+		ObjectMeta: metav1.ObjectMeta{Name: name, CreationTimestamp: metav1.NewTime(time.Date(2026, 1, 1, 0, age, 0, 0, time.UTC))},
+		Spec:       weftv1alpha1.WeftLocalDNSReflectorSpec{AllHostnames: all, Hostnames: hosts},
+	}
+}
+
+func TestResolveClaims(t *testing.T) {
+	tunnels := []weftv1alpha1.WeftTunnel{
+		tunnel("a", "t1", "http://x.a.svc:80", "https://gitea.lab0.us/"),
+		tunnel("a", "t2", "http://x.a.svc:80", "https://Authz.lab0.us/api"),
+		tunnel("a", "t3", "http://x.a.svc:80", "http://plain.lab0.us"),
+		tunnel("a", "t4", "tcp://x.a.svc:22", "tcp://ssh.lab0.us:22"),
+		tunnel("a", "t5", "http://x.a.svc:80", "https://10.0.0.1/"),
+	}
+	deleting := reflector("gone", 0, false, "plain.lab0.us")
+	now := metav1.Now()
+	deleting.DeletionTimestamp = &now
+
+	def := reflector("cluster-default", 5, true)
+	lab0 := reflector("lab0", 3, false, "gitea.lab0.us")
+	late := reflector("late", 9, false, "gitea.lab0.us", "other.lab0.us")
+	secondAll := reflector("second-all", 7, true)
+	all := []weftv1alpha1.WeftLocalDNSReflector{def, lab0, late, secondAll, deleting}
+
+	check := func(self weftv1alpha1.WeftLocalDNSReflector, wantClaimed, wantConflict string) {
+		t.Helper()
+		claimed, conflicting := resolveClaims(&self, all, tunnels)
+		t.Logf("%s: claimed=%v conflicting=%v", self.Name, claimed, conflicting)
+		if strings.Join(claimed, ",") != wantClaimed || strings.Join(conflicting, ",") != wantConflict {
+			t.Errorf("%s: claimed=%v conflicting=%v, want %q / %q", self.Name, claimed, conflicting, wantClaimed, wantConflict)
+		}
+	}
+	// allHostnames takes every valid http(s) tunnel host except explicit
+	// claims; the deleting reflector's claim no longer counts; tcp and IP
+	// hosts are skipped.
+	check(def, "authz.lab0.us,plain.lab0.us", "gitea.lab0.us")
+	// The oldest explicit claim wins.
+	check(lab0, "gitea.lab0.us", "")
+	check(late, "other.lab0.us", "gitea.lab0.us")
+	// A younger allHostnames reflector yields everything.
+	check(secondAll, "", "authz.lab0.us,gitea.lab0.us,plain.lab0.us")
+
+	if names := certNames(&secondAll, nil); len(names) != 1 || !strings.HasSuffix(names[0], placeholderCertSuffix) {
+		t.Errorf("empty claim set needs a placeholder SAN, got %v", names)
 	}
 }

@@ -43,7 +43,7 @@ func renderCoreDNS(reflectorName, serviceIP string, hostnames []string) (string,
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Managed by weft-operator WeftLocalDNSReflector %q. Do not edit.\n", reflectorName)
 	for _, h := range pki.SortedLower(hostnames) {
-		if len(h) > 253 || !hostnameRE.MatchString(h) {
+		if len(h) > 253 || !hostnameRE.MatchString(h) || net.ParseIP(h) != nil {
 			return "", fmt.Errorf("hostname %q is not a valid DNS name", h)
 		}
 		fmt.Fprintf(&b, "%s:53 {\n", h)

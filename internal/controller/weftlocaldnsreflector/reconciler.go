@@ -157,7 +157,18 @@ func (r *Reconciler) reconcile(ctx context.Context, refl *weftv1alpha1.WeftLocal
 	if err := r.List(ctx, &tunnels); err != nil {
 		return ctrl.Result{}, fmt.Errorf("list WeftTunnels: %w", err)
 	}
-	routes := computeRoutes(refl.Spec.Hostnames, tunnels.Items)
+	var reflectors weftv1alpha1.WeftLocalDNSReflectorList
+	if err := r.List(ctx, &reflectors); err != nil {
+		return ctrl.Result{}, fmt.Errorf("list reflectors: %w", err)
+	}
+	claimed, conflicting := resolveClaims(refl, reflectors.Items, tunnels.Items)
+	if len(conflicting) > 0 {
+		logger.Info("Hostnames owned by another reflector", "hostnames", conflicting)
+	}
+	refl.Status.ReflectedHostnames = claimed
+	refl.Status.ConflictingHostnames = conflicting
+
+	routes := computeRoutes(claimed, tunnels.Items)
 	for tunnel, reason := range routes.Skipped {
 		logger.Info("WeftTunnel not reflected", "tunnel", tunnel, "reason", reason)
 	}
@@ -165,9 +176,10 @@ func (r *Reconciler) reconcile(ctx context.Context, refl *weftv1alpha1.WeftLocal
 	refl.Status.Routes = routes.Routes
 	refl.Status.UnroutedHostnames = routes.Unrouted
 
-	// The certificate covers every spec hostname, not just routed ones, so
-	// a tunnel appearing or disappearing never forces a reissue.
-	certs, err := r.ensureCertificates(ctx, refl, refl.Spec.Hostnames)
+	// The certificate covers every claimed hostname, routed or not, so for
+	// an explicit list a tunnel appearing or disappearing never forces a
+	// reissue (allHostnames reissues as the set of tunnels changes).
+	certs, err := r.ensureCertificates(ctx, refl, certNames(refl, claimed))
 	if err != nil {
 		setCondition(refl, conditionCertificate, false, "IssueFailed", err.Error())
 		return ctrl.Result{}, err
@@ -211,7 +223,7 @@ func (r *Reconciler) reconcile(ctx context.Context, refl *weftv1alpha1.WeftLocal
 	available := deploymentAvailable(dep) && len(routes.Routes) > 0
 	switch {
 	case len(routes.Routes) == 0:
-		setCondition(refl, conditionProxy, false, "NoRoutes", "no WeftTunnel serves any of "+strings.Join(refl.Spec.Hostnames, ", "))
+		setCondition(refl, conditionProxy, false, "NoRoutes", "no WeftTunnel serves any claimed hostname "+strings.Join(claimed, ", "))
 	case !available:
 		setCondition(refl, conditionProxy, false, "Waiting", "proxy deployment has no available replica yet")
 	default:
@@ -335,6 +347,9 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Service{}).
 		Owns(&corev1.Secret{}).
 		Owns(&corev1.ConfigMap{}).
+		// Claims depend on every other reflector: one appearing, changing
+		// or going away can move hostnames between them.
+		Watches(&weftv1alpha1.WeftLocalDNSReflector{}, enqueueAll, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		// Routes come from tunnels; any tunnel change can add or remove one.
 		Watches(&weftv1alpha1.WeftTunnel{}, enqueueAll, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		// New namespaces need the CA bundle.

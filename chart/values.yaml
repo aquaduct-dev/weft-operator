@@ -7,6 +7,18 @@ image:
 # weft image run by WeftLocalDNSReflector proxies (needs `weft proxy --tls-cert`).
 weftImage: ghcr.io/aquaduct-dev/weft:latest
 
+# A cluster-default WeftLocalDNSReflector, created and kept in place by the
+# operator, so in-cluster traffic to weft-published hostnames stays in the
+# cluster without any per-cluster setup. Set enabled: false to have the
+# operator delete it (only a reflector it created itself is ever touched).
+defaultReflector:
+  enabled: true
+  name: cluster-default
+  # Empty: reflect every hostname served by a WeftTunnel (allHostnames).
+  # Otherwise only these. Hostnames another reflector lists explicitly are
+  # always left to that reflector.
+  hostnames: []
+
 imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""

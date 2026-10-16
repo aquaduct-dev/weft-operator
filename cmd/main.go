@@ -20,6 +20,7 @@ import (
 	"context"
 	"flag"
 	"os"
+	"strings"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -238,6 +239,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The cluster-default reflector (chart: defaultReflector.*).
+	if err := mgr.Add(&weftlocaldnsreflector.DefaultReflector{
+		Client:    mgr.GetClient(),
+		Enabled:   envOr("DEFAULT_REFLECTOR_ENABLED", "true") == "true",
+		Name:      envOr("DEFAULT_REFLECTOR_NAME", "cluster-default"),
+		Hostnames: splitList(os.Getenv("DEFAULT_REFLECTOR_HOSTNAMES")),
+	}); err != nil {
+		setupLog.Error(err, "unable to add default reflector")
+		os.Exit(1)
+	}
+
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")
 		os.Exit(1)
@@ -271,6 +283,17 @@ func reflectorOwnedOnly() map[client.Object]cache.ByObject {
 	return map[client.Object]cache.ByObject{
 		&corev1.ConfigMap{}: {Label: sel},
 	}
+}
+
+// splitList parses a comma-separated env value, dropping empty entries.
+func splitList(v string) []string {
+	var out []string
+	for s := range strings.SplitSeq(v, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func envOr(key, fallback string) string {

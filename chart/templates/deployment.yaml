@@ -42,6 +42,13 @@ spec:
             # Image for the reflector proxies (`weft proxy`).
             - name: WEFT_IMAGE
               value: "{{ .Values.weftImage }}"
+            # The operator-managed cluster-default WeftLocalDNSReflector.
+            - name: DEFAULT_REFLECTOR_ENABLED
+              value: {{ .Values.defaultReflector.enabled | quote }}
+            - name: DEFAULT_REFLECTOR_NAME
+              value: {{ .Values.defaultReflector.name | quote }}
+            - name: DEFAULT_REFLECTOR_HOSTNAMES
+              value: {{ join "," .Values.defaultReflector.hostnames | quote }}
             # The trust injection webhook is reached through this Service.
             - name: WEBHOOK_SERVICE_NAME
               value: {{ include "weft-operator.fullname" . }}-webhook
