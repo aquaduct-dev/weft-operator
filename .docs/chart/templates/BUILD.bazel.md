@@ -1,0 +1,5 @@
+<!-- docdaemon ts:2026-10-29T20:35:46Z hash:65267f18cb57ef3e model:openrouter/qwen/qwen3.7-flash -->
+## TL;DR
+This Bazel build file defines the targets that package Kubernetes manifests for the Weft operator Helm chart.
+
+The `copy_role` genrule copies the generated RBAC role from `//api/v1alpha1:generated.rbac` into `role.yaml`, ensuring the chart always uses the latest permissions defined in the API layer. The `exports_files` block declares all static template files (such as `deployment.yaml`, `serviceaccount.yaml`, and VPA resources) as public outputs, making them available to downstream consumers like the Helm chart packaging process. Finally, the `templates` filegroup aggregates all YAML files and the generated role into a single target, providing a convenient dependency for any rule that needs the complete set of chart templates. This structure separates generated artifacts from static ones while keeping the build interface simple.

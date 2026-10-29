@@ -1,0 +1,5 @@
+<!-- docdaemon ts:2026-10-29T20:36:10Z hash:c05b3a747e1aff29 model:openrouter/qwen/qwen3.7-flash -->
+## TL;DR
+This file sets up and tears down an isolated Kubernetes control plane for integration testing the controller logic.
+
+The `TestControllers` entry point registers Ginkgo/Gomega handlers to run the suite. The `BeforeSuite` block bootstraps a local `envtest.Environment`, configuring it with CRD paths derived from the `TEST_SRCDIR` environment variable. This structure supports the test isolation strategy, ensuring tests do not rely on external cluster state or bundled dependencies. It starts the API server, retrieves a `rest.Config`, and initializes a `client.Client` capable of interacting with the mocked cluster. Finally, it registers the `weftv1alpha1` API types into the scheme so the client can manage custom resources. The `AfterSuite` ensures the test environment is cleaned up after execution.

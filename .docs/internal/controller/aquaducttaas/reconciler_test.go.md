@@ -1,0 +1,5 @@
+<!-- docdaemon ts:2026-10-29T20:36:08Z hash:3fdb9609aecfd88a model:openrouter/qwen/qwen3.7-flash -->
+## TL;DR
+This file contains the Ginkgo test suite for the `AquaductTaaSReconciler`, verifying its lifecycle, error handling, and cleanup logic.
+
+It uses a `mockAPIClient` to simulate cloud API interactions, allowing tests to inject state changes between reconciles. The suite validates that the controller correctly mirrors external bastions as `WeftServer` resources, updates them on change, and prunes stale ones. It also covers critical deletion paths: suspending remote bastions via `SuspendServer`, cascading DNSRecord deletions, and managing finalizers on both the `AquaductTaaS` CR and the backing access-token Secret to prevent resource leaks or wedges. A `statusCountingClient` wrapper ensures converged reconciles do not trigger unnecessary status writes that would cause re-queue loops.

@@ -1,0 +1,5 @@
+<!-- docdaemon ts:2026-10-29T20:36:18Z hash:a459ea1fe6410a87 model:openrouter/qwen/qwen3.7-flash -->
+## TL;DR
+This file contains integration tests for the WeftTunnel controller to verify deployment lifecycle and server targeting logic.
+
+It validates that `WeftTunnelReconciler` correctly creates, updates, and prunes Kubernetes Deployments based on the `TargetServers` configuration. Tests cover scenarios where `TargetServers` is empty (targeting all servers) or explicitly listed, ensuring obsolete deployments are removed when targets change. It also verifies cross-namespace access by creating tunnels in `default` that target servers in `weft-system`. The test suite uses Ginkgo/Gomega with a fake Kubernetes client to assert that Deployment arguments match expected connection strings, including handling internal vs. external server locations.

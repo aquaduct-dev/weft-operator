@@ -1,0 +1,5 @@
+<!-- docdaemon ts:2026-10-29T20:35:51Z hash:97c84aa4378fa993 model:openrouter/qwen/qwen3.7-flash -->
+## TL;DR
+This file bootstraps the Weft Operator manager, registers controllers and webhooks, and acts as the entry point for the node agent.
+
+The `main` function initializes the controller-runtime manager with a filtered cache to prevent OOM issues by only watching ConfigMaps labeled with `trust.ManagedLabel`. It performs a preflight check to ensure Gateway API CRDs are installed before starting. Six reconcilers are registered: `WeftServer`, `WeftTunnel`, `AquaductTaaS`, `DNSRecord`, `WeftGateway`, and `WeftLocalDNSReflector`. A trust injection webhook is configured to inject CA certificates into pods, excluding the operator namespace and `kube-system`. The binary also supports running as a node agent via the `node-agent` subcommand.

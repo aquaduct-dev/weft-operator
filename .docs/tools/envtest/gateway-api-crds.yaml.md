@@ -1,0 +1,5 @@
+<!-- docdaemon ts:2026-10-29T20:36:50Z hash:23e4e1095c72a058 model:openrouter/qwen/qwen3.7-flash -->
+## TL;DR
+This file contains the Custom Resource Definitions (CRDs) for Gateway API standard channel resources, including `GatewayClass`, `Gateway`, and `HTTPRoute`.
+
+It defines the schema for managing ingress traffic by specifying cluster-scoped classes, namespaced gateway instances with listener configurations, and HTTP routing rules. The CRDs enforce strict validation for filters like header modification, redirection, and URL rewriting, ensuring mutual exclusivity and correct path match requirements. Status tracking monitors acceptance and programming states across parent gateways. This file is no longer bundled in the Helm chart; operators must provide their own CRD installation or rely on discovery preflight checks to fail fast if missing.

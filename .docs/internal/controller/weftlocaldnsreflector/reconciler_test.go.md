@@ -1,0 +1,5 @@
+<!-- docdaemon ts:2026-10-29T20:36:00Z hash:9b7cebc3d6508ee0 model:openrouter/qwen/qwen3.7-flash -->
+## TL;DR
+This file contains end-to-end integration tests for the `WeftLocalDNSReflector` controller using envtest.
+
+It validates the full lifecycle of in-cluster DNS reflection, ensuring that hostnames from `WeftTunnel` resources are correctly resolved within the cluster via CoreDNS overrides and node agents. The tests cover certificate issuance and trust bundle distribution across namespaces, verifying that DNS records are withheld until proxy availability and pod trust are established. It also confirms proper cleanup when tunnels or reflectors are deleted, handling finalizers to remove stale DNS entries. Additionally, it tests the default reflector logic for automatic hostname claiming and conflict resolution, as well as validation rules for invalid hostnames and successful pod injection with system bundle mounts.

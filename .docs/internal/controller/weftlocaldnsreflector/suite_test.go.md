@@ -1,0 +1,5 @@
+<!-- docdaemon ts:2026-10-29T20:35:57Z hash:85c5c030753976d5 model:openrouter/qwen/qwen3.7-flash -->
+## TL;DR
+This file bootstraps an `envtest` environment to unit test the WeftLocalDNSReflector controller with a production-like configuration.
+
+The `BeforeSuite` block initializes a fake Kubernetes cluster, loading CRDs and registering API schemes. It configures the manager cache to filter ConfigMaps by the managed label, mirroring the production operator's read paths. A temporary system roots file is generated in-memory to satisfy the PKI trust source without external dependencies. The reconciler is instantiated with specific image references, excluded namespaces, and trust recheck intervals, then started asynchronously. This setup ensures tests exercise the same logic as the live deployment while isolating side effects like pod scheduling or garbage collection.

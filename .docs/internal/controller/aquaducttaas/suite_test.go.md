@@ -1,0 +1,5 @@
+<!-- docdaemon ts:2026-10-29T20:36:07Z hash:5f59cb89e31861a3 model:openrouter/qwen/qwen3.7-flash -->
+## TL;DR
+This file sets up the Ginkgo test suite environment, including a local Kubernetes cluster and controller manager, for integration testing the AquaductTaaS controller.
+
+The `TestControllers` entry point registers Ginkgo/Gomega handlers to run specs. The `BeforeSuite` block initializes the test infrastructure by configuring logging and starting an `envtest.Environment`. This environment loads Custom Resource Definitions (CRDs) from two sources: the Helm chart’s bundled CRDs (`_main/tools/envtest`) and generated API CRDs (`_main/api/v1alpha1/crds`). It establishes a connection to the fake Kubernetes API server using `rest.Config` and creates a `client.Client` with the operator's scheme. A controller manager is started in a goroutine to reconcile resources against this test cluster. The `AfterSuite` ensures cleanup by canceling the context and stopping the test environment.
