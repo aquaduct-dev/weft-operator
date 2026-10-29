@@ -50,12 +50,13 @@ securityContext:
 # (below), THESE are the actual runtime values — VPA observes and recommends but
 # does not mutate the pod, so the operator runs at exactly request/limit. The
 # 128Mi limit OOM-killed the cluster-wide operator (exit 137); steady-state usage
-# is ~150Mi with a recommendation around ~335Mi, so 250Mi request / 500Mi limit
-# gives headroom without over-reserving. CPU is left static (VPA is memory-only).
+# is ~150Mi, so 250Mi request keeps the reservation small while the 1Gi limit
+# leaves room for informer-cache spikes (e.g. a burst of Helm release Secrets).
+# CPU is left static (VPA is memory-only).
 resources:
   limits:
     cpu: 500m
-    memory: 500Mi
+    memory: 1Gi
   requests:
     cpu: 10m
     memory: 250Mi
