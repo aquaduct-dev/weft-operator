@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"k8s.io/client-go/kubernetes"
@@ -72,6 +73,40 @@ type WeftServerReconciler struct {
 	Scheme        *runtime.Scheme
 	ClientFactory WeftClientFactory
 	Clientset     kubernetes.Interface
+
+	// weftClients keeps one logged-in client per connection string. Each
+	// weft client owns its own http.Transport, which keeps its keep-alive
+	// connection to the server open and can't be closed from here, so
+	// building a new client every 30s refresh leaked one connection (and two
+	// goroutines) per reconcile: ~4.7k idle connections and ~340Mi after a day.
+	clientsMu   sync.Mutex
+	weftClients map[string]WeftClient
+}
+
+// weftClientFor returns the cached client for connStr, creating it on first use.
+func (r *WeftServerReconciler) weftClientFor(connStr string) (WeftClient, error) {
+	r.clientsMu.Lock()
+	defer r.clientsMu.Unlock()
+	if c, ok := r.weftClients[connStr]; ok {
+		return c, nil
+	}
+	c, err := r.ClientFactory(connStr, "")
+	if err != nil {
+		return nil, err
+	}
+	if r.weftClients == nil {
+		r.weftClients = map[string]WeftClient{}
+	}
+	r.weftClients[connStr] = c
+	return c, nil
+}
+
+// forgetWeftClient drops the cached client for connStr so the next reconcile
+// logs in again, e.g. after the server was re-provisioned with a new cert.
+func (r *WeftServerReconciler) forgetWeftClient(connStr string) {
+	r.clientsMu.Lock()
+	defer r.clientsMu.Unlock()
+	delete(r.weftClients, connStr)
 }
 
 //+kubebuilder:rbac:groups=weft.aquaduct.dev,resources=weftservers,verbs=get;list;watch;create;update;patch;delete
@@ -460,7 +495,7 @@ func (r *WeftServerReconciler) updateWeftServerStatus(ctx context.Context, weftS
 			}
 		}
 
-		weftClient, err := r.ClientFactory(connStr, "")
+		weftClient, err := r.weftClientFor(connStr)
 		if err != nil {
 			log.Error(err, "Failed to create weft client")
 			meta.SetStatusCondition(&weftServer.Status.Conditions, metav1.Condition{
@@ -477,6 +512,7 @@ func (r *WeftServerReconciler) updateWeftServerStatus(ctx context.Context, weftS
 
 		tunnels, err := weftClient.ListTunnels()
 		if err != nil {
+			r.forgetWeftClient(connStr)
 			// Check if it's a connection error (server might be starting up)
 			if strings.Contains(err.Error(), "connection refused") || strings.Contains(err.Error(), "no such host") {
 				log.Info("Failed to connect to weft server (server might be starting)", "error", err)
