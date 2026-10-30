@@ -82,7 +82,8 @@ type Domain struct {
 //     and tears down the cloudflare records.
 //   - &[ids...]    -> explicit list; server applies exactly these bastions.
 type DomainAPIClient interface {
-	// GetDomain returns the record for `name` or ErrDomainNotFound on 404.
+	// GetDomain returns the record for `name`, ErrDomainNotFound on 404, or
+	// ErrDomainForeign on 403 (the domain belongs to another user).
 	// Any other error (network, 5xx, auth) is surfaced to the caller so
 	// the reconciler can retry and surface a meaningful status.
 	GetDomain(ctx context.Context, token, name string) (*Domain, error)
@@ -173,6 +174,12 @@ func (c *HTTPAPIClient) GetDomain(ctx context.Context, token, name string) (*Dom
 
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, ErrDomainNotFound
+	}
+	// aquaduct.dev owner-checks GET too: another user's domain is a 403,
+	// not a 200 that a later PATCH would be refused on.
+	if resp.StatusCode == http.StatusForbidden {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("%w (status %d): %s", ErrDomainForeign, resp.StatusCode, string(body))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)

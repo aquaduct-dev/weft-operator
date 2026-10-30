@@ -1,0 +1,18 @@
+# Chart values for the aquaduct e2e microVM: images are preloaded under
+# these tags, so nothing may be pulled. The token exchange goes to the
+# in-cluster fake (its "authz" Service), and the chart's GatewayClass is
+# created so Gateways reach the AutoDNS path.
+image:
+  url: ghcr.io/aquaduct-dev/weft-operator:e2e
+  pullPolicy: Never
+weftImage: ghcr.io/aquaduct-dev/weft:e2e
+verticalPodAutoscaler:
+  enabled: false
+  installController: "false"
+defaultReflector:
+  enabled: false
+gatewayClass:
+  create: true
+extraEnv:
+  - name: AUTHZ_ENDPOINT
+    value: http://fake-authz.aquaduct-fake.svc.cluster.local

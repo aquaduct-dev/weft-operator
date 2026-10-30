@@ -2,6 +2,7 @@ package aquaducttaas_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -76,5 +77,15 @@ func TestDomainWritesAcceptAnEmptyBody(t *testing.T) {
 	}
 	if _, err := c.PatchDomain(context.Background(), "tok", "a.example.com", &ids); err != nil {
 		t.Fatalf("PatchDomain with 204: %v", err)
+	}
+}
+
+// aquaduct.dev owner-checks GET /domain/{name}: another user's domain is a
+// 403, which must read as foreign-owned rather than a transient API error.
+func TestGetDomainForbiddenIsForeign(t *testing.T) {
+	api := newFakeAPI(t, func(w http.ResponseWriter, r *http.Request) { http.Error(w, "forbidden", http.StatusForbidden) })
+	c := aquaducttaas.NewHTTPAPIClient(api.URL, api.URL)
+	if _, err := c.GetDomain(context.Background(), "tok", "theirs.example.com"); !errors.Is(err, aquaducttaas.ErrDomainForeign) {
+		t.Fatalf("GetDomain on a 403 = %v, want ErrDomainForeign", err)
 	}
 }
