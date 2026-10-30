@@ -1,0 +1,10 @@
+# Namespaces for the install e2e: the operator's and the workloads'.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: weft-system
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: e2e-app

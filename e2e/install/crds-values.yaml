@@ -1,0 +1,15 @@
+# Chart values for crds_test (rendered at build time, applied with kubectl):
+# preloaded :e2e images, nothing pulled; no VPA, no GatewayClass (the
+# Gateway API CRDs are not there yet when this is applied) and no default
+# reflector (not under test here).
+image:
+  url: ghcr.io/aquaduct-dev/weft-operator:e2e
+  pullPolicy: Never
+weftImage: ghcr.io/aquaduct-dev/weft:e2e
+verticalPodAutoscaler:
+  enabled: false
+  installController: "false"
+gatewayClass:
+  create: false
+defaultReflector:
+  enabled: false
