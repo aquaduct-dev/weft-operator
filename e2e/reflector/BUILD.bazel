@@ -21,9 +21,13 @@ load("//e2e:defs.bzl", "e2e_binary_image", "weft_e2e_test")
 go_library(
     name = "reflector_lib",
     srcs = [
+        "claims_scenario.go",
         "client.go",
         "default_scenario.go",
+        "extras.go",
+        "fetch.go",
         "kube.go",
+        "lifecycle_scenario.go",
         "main.go",
         "scenario.go",
     ],
@@ -31,6 +35,7 @@ go_library(
     visibility = ["//visibility:private"],
     deps = [
         "//api/v1alpha1",
+        "//e2e/e2ekit",
         "//internal/clusterharness",
         "//internal/pki",
         "@io_k8s_api//admissionregistration/v1:admissionregistration",
@@ -97,6 +102,7 @@ helm_template(
         "e2e-values.yaml",
         "no-default-reflector.yaml",
     ],
+    visibility = ["//e2e:__subpackages__"],
 )
 
 weft_e2e_test(
@@ -135,5 +141,70 @@ weft_e2e_test(
         "00-namespaces.yaml": "00-namespaces.yaml",
     },
     scenario = "default-reflector",
+    test_binary = ":reflectore2e",
+)
+
+# Several reflectors and several kinds of tunnel in one cluster
+# (claims_scenario.go):
+#   - claims.routes / claims.traffic: an https and an http tunnel are routed
+#     (the http one served on the proxy's HTTP port and fetched over plain
+#     HTTP); tcp-source, loopback-source and tunnel-less hostnames are in
+#     status.unroutedHostnames and do not resolve; a second tunnel to an
+#     already-served destination is dropped from status.routes;
+#   - claims.ignore-untrusted / claims.trust-gate: ignoreUntrustedPods gives
+#     ClientsTrustCA=True/Ignored and published DNS despite a pod that
+#     predates the reflector; without it the gate closes on exactly the
+#     pre-existing pods (DNS and node agent withdrawn), never on pods opted
+#     out by label or annotation or running in kube-system;
+#   - claims.explicit-beats-all / older-wins / handover: an older
+#     allHostnames reflector loses every explicitly listed hostname, a
+#     younger explicit reflector loses to the older one (conflictingHostnames,
+#     ProxyAvailable=False/NoRoutes, no CoreDNS key), and deleting the winner
+#     moves the hostname and its CoreDNS key to the loser, whose proxy then
+#     serves clients; the allHostnames reflector picks up what nobody lists.
+#
+#   bazel test --config=kvm //e2e/reflector:reflector_claims_test
+weft_e2e_test(
+    name = "reflector_claims_test",
+    extra_files = {
+        ":operator_manifest_no_default": "/etc/e2e/weft-operator.yaml",
+    },
+    extra_images = {
+        "//e2e/images:registry_tar": "registry.tar",
+        ":client_tar": "client.tar",
+    },
+    extra_manifests = {
+        "00-namespaces.yaml": "00-namespaces.yaml",
+    },
+    scenario = "reflector-claims",
+    test_binary = ":reflectore2e",
+)
+
+# One reflector through a running cluster's changes (lifecycle_scenario.go):
+#   - life.reissue: adding a hostname reissues the serving certificate (new
+#     SANs and fingerprint) and rolls the proxy; the new hostname verifies;
+#   - life.proxy-down: with the node cordoned and the proxy pod deleted, DNS
+#     is withdrawn (DNSPublished=False/Withdrawn) and the node agent's failed
+#     TLS check removes its /etc/hosts entry; both return with the proxy;
+#   - life.agent-reasserts: the agent restores its /etc/hosts block, node
+#     trust-store block and containerd certs.d entry after they are deleted;
+#   - life.cluster-dns-disabled / node-trust-disabled: clusterDNS.disabled
+#     removes the CoreDNS override (pods stop resolving the name) and
+#     nodeTrust.disabled removes the agent and everything it wrote.
+#
+#   bazel test --config=kvm //e2e/reflector:reflector_lifecycle_test
+weft_e2e_test(
+    name = "reflector_lifecycle_test",
+    extra_files = {
+        ":operator_manifest_no_default": "/etc/e2e/weft-operator.yaml",
+    },
+    extra_images = {
+        "//e2e/images:registry_tar": "registry.tar",
+        ":client_tar": "client.tar",
+    },
+    extra_manifests = {
+        "00-namespaces.yaml": "00-namespaces.yaml",
+    },
+    scenario = "reflector-lifecycle",
     test_binary = ":reflectore2e",
 )
