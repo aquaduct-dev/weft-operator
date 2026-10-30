@@ -250,6 +250,20 @@ The host needs `/dev/kvm` (user in the `kvm` group; firecracker itself is pinned
 and gcc/make/flex/bison/libelf-dev for the one-time guest kernel build.
 KVM-less hosts can skip these tests with `--test_tag_filters=-requires-kvm`.
 
+Each BUILD file's header lists its test's pass conditions. Scenario binaries
+use the shared harness in `e2e/e2ekit`; `e2e/defs.bzl` and `e2e/images`
+provide the preloaded images and the `weft_e2e_test` macro.
+
+| Test | Covers |
+|---|---|
+| `//e2e/tunnels:tunnels_test` | Internal WeftServers (PVC, ports, status from a real server), Gateway/HTTPRoute/TCPRoute/UDPRoute to WeftTunnels to traffic through real weft, header filters and paths, Tx/Rx, prune and GC, no connection leak to the server |
+| `//e2e/tunnels:prober_test` | node probe Job and the auto-created node WeftServer |
+| `//e2e/aquaduct:aquaduct_test` | AquaductTaaS, DNSRecord and Gateway AutoDNS against an in-cluster fake aquaduct.dev (token exchange, sync, prune, foreign domains, deletion order) |
+| `//e2e/trust:webhook_test` | the trust-injection webhook: configuration, mounts, exclusions, opt-outs, dry runs, failurePolicy Ignore, restarts |
+| `//e2e/reflector:*` | WeftLocalDNSReflector: pod and node paths, default reflector, claims between reflectors, trust gate, cert reissue, proxy withdrawal, node agent repair |
+| `//e2e/install:crds_test` | no Gateway API, standard channel only (no TCP/TLS/UDP routes), then experimental; leader lease, probes, restart without rewrites |
+| `//e2e/install:chart_test` | the chart through real helm: CRD adoption, CRD upgrades, VPA install modes, extraEnv, uninstall |
+
 To test against an unpushed weft checkout, add to `.bazelrc.user`:
 
 ```
