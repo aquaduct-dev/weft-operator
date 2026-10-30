@@ -23,6 +23,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"net/netip"
+	"regexp"
 	"strings"
 	"time"
 
@@ -56,6 +58,7 @@ type NodeProber struct {
 
 //+kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
 //+kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups="",resources=pods/log,verbs=get
 
 // Start implements manager.Runnable
 func (p *NodeProber) Start(ctx context.Context) error {
@@ -260,12 +263,11 @@ func (p *NodeProber) processNode(ctx context.Context, node *corev1.Node) error {
 					buf := new(strings.Builder)
 					_, err := io.Copy(buf, podLogs)
 					if err == nil {
-						logs := buf.String()
-						trimmed := strings.TrimSpace(logs)
-						if trimmed != "" {
-							// Basic validation?
-							discoveredIP = trimmed
+						if ip := probedIP(buf.String()); ip != "" {
+							discoveredIP = ip
 							log.Info("Discovered public IP from logs", "ip", discoveredIP)
+						} else {
+							log.Info("Probe log names no public IPv4; falling back to the node address")
 						}
 					}
 				}
@@ -321,4 +323,37 @@ func randString(n int) string {
 		return "random"
 	}
 	return hex.EncodeToString(b)[:n]
+}
+
+var (
+	ansiEscape = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+	ipv4Token  = regexp.MustCompile(`(?:^|[^0-9.])((?:[0-9]{1,3}\.){3}[0-9]{1,3})(?:[^0-9.]|$)`)
+)
+
+// probedIP extracts the public IPv4 that `weft probe` verified from its log.
+// The log is zerolog console output (timestamps, levels, key=value fields,
+// ANSI colour codes), e.g.
+//
+//	2026-01-01T00:00:00Z INF ACME probe succeeded host=203.0.113.7
+//
+// so it takes the address from the "ACME probe succeeded" line, and accepts
+// a log that is nothing but the address. Using the whole log as the IP made
+// the WeftServer connection string unusable. Returns "" when no public IPv4
+// is found.
+func probedIP(logs string) string {
+	logs = ansiEscape.ReplaceAllString(logs, "")
+	lines := strings.Split(strings.TrimSpace(logs), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if !strings.Contains(line, "ACME probe succeeded") && len(lines) != 1 {
+			continue
+		}
+		for _, m := range ipv4Token.FindAllStringSubmatch(line, -1) {
+			ip, err := netip.ParseAddr(m[1])
+			if err == nil && ip.Is4() && !ip.IsLoopback() && !ip.IsPrivate() && !ip.IsLinkLocalUnicast() && !ip.IsUnspecified() {
+				return ip.String()
+			}
+		}
+	}
+	return ""
 }

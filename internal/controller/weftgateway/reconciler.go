@@ -332,6 +332,9 @@ func (r *WeftGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 						if listener.Protocol != gatewayv1.TCPProtocolType {
 							continue
 						}
+						if !parentRefsSelectListener(route.Namespace, route.Spec.ParentRefs, &gateway, listener) {
+							continue
+						}
 						if listener.Hostname == nil {
 							// TCP routes typically use port-based routing, not hostname
 							// Use the listener port as the destination
@@ -404,6 +407,9 @@ func (r *WeftGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 						if listener.Protocol != gatewayv1.TLSProtocolType {
 							continue
 						}
+						if !parentRefsSelectListener(route.Namespace, route.Spec.ParentRefs, &gateway, listener) {
+							continue
+						}
 						if listener.Hostname == nil {
 							continue
 						}
@@ -461,6 +467,9 @@ func (r *WeftGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 					for _, listener := range gateway.Spec.Listeners {
 						if listener.Protocol != gatewayv1.UDPProtocolType {
+							continue
+						}
+						if !parentRefsSelectListener(route.Namespace, route.Spec.ParentRefs, &gateway, listener) {
 							continue
 						}
 
@@ -833,6 +842,30 @@ func isRouteAttachedToListener(route *gatewayv1.HTTPRoute, gateway *gatewayv1.Ga
 	return false
 }
 
+// parentRefsSelectListener reports whether any of an L4/TLS route's
+// parentRefs names this Gateway and either leaves sectionName unset or
+// names this listener. Without it a TCPRoute pinned to one TCP listener
+// was also published on every other TCP listener of the Gateway (and the
+// same for TLS/UDP), exposing the backend on ports nobody routed to it.
+func parentRefsSelectListener(routeNamespace string, parentRefs []gatewayv1.ParentReference, gateway *gatewayv1.Gateway, listener gatewayv1.Listener) bool {
+	for _, parent := range parentRefs {
+		if string(parent.Name) != gateway.Name {
+			continue
+		}
+		ns := routeNamespace
+		if parent.Namespace != nil {
+			ns = string(*parent.Namespace)
+		}
+		if ns != gateway.Namespace {
+			continue
+		}
+		if parent.SectionName == nil || string(*parent.SectionName) == string(listener.Name) {
+			return true
+		}
+	}
+	return false
+}
+
 // hostnamesIntersect reports whether any route hostname overlaps the
 // listener's. An absent listener hostname matches everything, and a route
 // that declares no hostnames inherits the listener's.
@@ -1157,10 +1190,10 @@ func httpFiltersToFragment(filters []gatewayv1.HTTPRouteFilter) string {
 		}
 		rhm := f.RequestHeaderModifier
 		for _, h := range rhm.Set {
-			parts = append(parts, fmt.Sprintf("%s=%s", h.Name, url.QueryEscape(h.Value)))
+			parts = append(parts, fmt.Sprintf("%s=%s", h.Name, escapeFragmentValue(h.Value)))
 		}
 		for _, h := range rhm.Add {
-			parts = append(parts, fmt.Sprintf("%s=+%s", h.Name, url.QueryEscape(h.Value)))
+			parts = append(parts, fmt.Sprintf("%s=+%s", h.Name, escapeFragmentValue(h.Value)))
 		}
 		for _, name := range rhm.Remove {
 			parts = append(parts, fmt.Sprintf("%s=!del", name))
@@ -1170,4 +1203,14 @@ func httpFiltersToFragment(filters []gatewayv1.HTTPRouteFilter) string {
 		return ""
 	}
 	return "/#" + strings.Join(parts, "&")
+}
+
+// escapeFragmentValue escapes a header value for the src URL fragment. weft
+// reads the fragment after url.Parse has decoded it, which turns %XX back
+// into bytes but leaves '+' alone, so query escaping (space -> '+') made
+// "hello world" arrive at the backend as "hello+world". Path escaping uses
+// %20 for space and still escapes '%' and '#'. weft splits the decoded
+// fragment on '&' and '=', so those cannot be carried in a value either way.
+func escapeFragmentValue(v string) string {
+	return url.PathEscape(v)
 }
