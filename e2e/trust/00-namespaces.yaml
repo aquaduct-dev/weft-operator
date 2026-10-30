@@ -1,0 +1,25 @@
+# Namespaces for the trust webhook e2e: the operator's, the workloads the
+# webhook injects, and one that already holds an unrelated ConfigMap named
+# like the trust bundle before any reflector exists.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: weft-system
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: e2e-trust
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: e2e-foreign
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: weft-trust-bundle
+  namespace: e2e-foreign
+data:
+  owner: someone-else

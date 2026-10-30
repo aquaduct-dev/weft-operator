@@ -1,0 +1,100 @@
+# End-to-end test for the trust-injection webhook (internal/webhook/
+# trustinjector + internal/trust) against a real API server, kubelet and
+# containerd.
+#
+# A single-node k3s boots in an airgapped firecracker microVM with the
+# operator installed from the real chart (cluster-default reflector off).
+# The guest binary drives webhook.go and passes iff every step does:
+#
+#   - webhook.configuration: the MutatingWebhookConfiguration matches pod
+#     CREATE only, failurePolicy Ignore, sideEffects NoneOnDryRun, 5s
+#     timeout, reinvocationPolicy IfNeeded, excludes kube-system and the
+#     operator namespace, honours the inject-trust=false label, and its
+#     caBundle is the persisted CA that the serving certificate chains to;
+#   - webhook.no-reflector: with no reflector, pods are admitted unmodified;
+#   - webhook.injected / webhook.covered-mount: with a Ready reflector, a pod
+#     gets the trusted-cas annotation, the 0444 weft-trust-bundle volume and
+#     mounts at all three system bundle paths in init and app containers
+#     (and really reads the reflector CA there), while a container's own
+#     mount over /etc/pki is kept;
+#   - webhook.excluded-namespaces: kube-system and weft-system untouched;
+#   - webhook.opt-out: the opt-out label is filtered by the API server (the
+#     operator's webhook request counter does not move), the annotation by
+#     the handler (it does), a windows pod is untouched and stays Pending,
+#     and the opted-out pods do not hold the reflector's trust gate;
+#   - webhook.new-namespace / namespace-watch / dry-run: a pod created right
+#     after its namespace starts (its bundle ConfigMap is there, published
+#     by whichever of the webhook and the reflector's namespace watch got
+#     there first; it varies run to run), an empty new namespace gets the
+#     ConfigMap, and a server-side dry run is injected, persists nothing and
+#     the webhook logs no on-demand publish for it;
+#   - webhook.failure-ignore: with the operator scaled to 0 a pod is admitted
+#     uninjected; once it is back the trust gate reports PodsNeedRestart
+#     naming that pod and withdraws DNS, and restores it when the pod goes;
+#   - webhook.restart-stable: the serving certificate Secret and caBundle are
+#     unchanged across an operator restart and injection keeps working;
+#   - webhook.foreign-configmap: an unrelated ConfigMap named
+#     weft-trust-bundle (created before any reflector) is never modified,
+#     pods next to it are admitted without injection instead of having it
+#     mounted over their trust store (an alpine pod starts), and the trust
+#     gate names them.
+#
+#   bazel test --config=kvm //e2e/trust:webhook_test
+
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("//e2e:defs.bzl", "e2e_binary_image", "weft_e2e_test")
+
+go_library(
+    name = "trust_lib",
+    srcs = [
+        "main.go",
+        "netns.go",
+        "webhook.go",
+    ],
+    importpath = "aquaduct.dev/weft-operator/e2e/trust",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//api/v1alpha1",
+        "//e2e/e2ekit",
+        "//internal/pki",
+        "@io_k8s_api//admissionregistration/v1:admissionregistration",
+        "@io_k8s_api//apps/v1:apps",
+        "@io_k8s_api//core/v1:core",
+        "@io_k8s_apimachinery//pkg/api/errors",
+        "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
+        "@io_k8s_apimachinery//pkg/types",
+        "@io_k8s_sigs_controller_runtime//pkg/client",
+    ],
+)
+
+# Static: the microVM rootfs has no libc.
+go_binary(
+    name = "truste2e",
+    embed = [":trust_lib"],
+    pure = "on",
+    static = "on",
+    visibility = ["//visibility:public"],
+)
+
+# An alpine image (a real system trust store at the bundle paths) running
+# this binary's "sleep" mode.
+e2e_binary_image(
+    name = "alpine",
+    binary = ":truste2e",
+    tag = "ghcr.io/aquaduct-dev/weft-operator-e2e-trust:e2e",
+)
+
+weft_e2e_test(
+    name = "webhook_test",
+    extra_files = {
+        "//e2e/reflector:operator_manifest_no_default": "/etc/e2e/weft-operator.yaml",
+    },
+    extra_images = {
+        ":alpine_tar": "alpine.tar",
+    },
+    extra_manifests = {
+        "00-namespaces.yaml": "00-namespaces.yaml",
+    },
+    scenario = "webhook",
+    test_binary = ":truste2e",
+)

@@ -16,6 +16,7 @@ import (
 	admissionv1 "k8s.io/api/admission/v1"
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -194,4 +195,76 @@ func TestSetup(t *testing.T) {
 	if string(renewed) == string(certPEM) {
 		t.Errorf("certificate not renewed inside the renewal window")
 	}
+}
+
+// A ConfigMap named like the bundle but not managed by the operator must
+// never be mounted: pods there are admitted unmodified (dry run or not) and
+// the ConfigMap is left alone. The manager cache filters ConfigMaps on the
+// managed label, so the handler's reader is modelled without it and the
+// handler has to find it through the API (client).
+func TestHandlerLeavesForeignConfigMapAlone(t *testing.T) {
+	c, src, scheme := fixture(t)
+	foreignCM := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "apps", Name: trust.ConfigMapName},
+		Data:       map[string]string{"owner": "someone-else"},
+	}
+	if err := c.Create(context.Background(), foreignCM); err != nil {
+		t.Fatal(err)
+	}
+	pod := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "web", Image: "nginx"}}}}
+
+	for name, reader := range map[string]client.Reader{
+		"uncached reader":      c,
+		"label-filtered cache": filteredReader{Reader: c},
+	} {
+		h := &Handler{Client: c, Source: &trust.Source{Reader: reader, SystemRootsFile: src.SystemRootsFile}, Decoder: admission.NewDecoder(scheme)}
+		for _, dryRun := range []bool{true, false} {
+			resp := h.Handle(context.Background(), request(t, pod, dryRun))
+			if !resp.Allowed || len(resp.Patches) != 0 {
+				t.Errorf("%s, dryRun=%v: pod next to a foreign ConfigMap was patched (%d patches)", name, dryRun, len(resp.Patches))
+			}
+		}
+	}
+	got := &corev1.ConfigMap{}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(foreignCM), got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Data) != 1 || got.Data["owner"] != "someone-else" || len(got.OwnerReferences) != 0 || len(got.Labels) != 0 {
+		t.Errorf("foreign ConfigMap modified: %+v", got)
+	}
+}
+
+// The reconciler may publish the bundle moments before the cache sees it:
+// the handler's create then conflicts, and the pod must still be injected.
+func TestHandlerInjectsWhenCacheLagsOwnBundle(t *testing.T) {
+	c, src, scheme := fixture(t)
+	own := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
+		Namespace: "apps", Name: trust.ConfigMapName,
+		Labels: map[string]string{trust.ManagedLabel: trust.ManagedValue},
+	}}
+	if err := c.Create(context.Background(), own); err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{Client: c, Source: &trust.Source{Reader: filteredReader{Reader: c, lagging: true}, SystemRootsFile: src.SystemRootsFile}, Decoder: admission.NewDecoder(scheme)}
+	pod := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "web", Image: "nginx"}}}}
+	if resp := h.Handle(context.Background(), request(t, pod, false)); !resp.Allowed || len(resp.Patches) == 0 {
+		t.Errorf("pod not injected while the cache lagged the operator's own bundle")
+	}
+}
+
+// filteredReader hides ConfigMaps the way the manager cache does: those
+// without the managed label (or, with lagging, every ConfigMap).
+type filteredReader struct {
+	client.Reader
+	lagging bool
+}
+
+func (f filteredReader) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if err := f.Reader.Get(ctx, key, obj, opts...); err != nil {
+		return err
+	}
+	if cm, ok := obj.(*corev1.ConfigMap); ok && (f.lagging || cm.Labels[trust.ManagedLabel] != trust.ManagedValue) {
+		return apierrors.NewNotFound(corev1.Resource("configmaps"), key.Name)
+	}
+	return nil
 }

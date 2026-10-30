@@ -11,7 +11,9 @@ package trustinjector
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
+	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -56,10 +58,13 @@ func (h *Handler) Handle(ctx context.Context, req admission.Request) admission.R
 	}
 
 	// The pod will mount the namespace's bundle ConfigMap; make sure it
-	// exists so the pod is not stuck in ContainerCreating. Skipped on dry
-	// runs (sideEffects: NoneOnDryRun).
+	// exists so the pod is not stuck in ContainerCreating. Dry runs only
+	// check it (sideEffects: NoneOnDryRun).
 	if req.DryRun == nil || !*req.DryRun {
 		created, err := h.Source.CreateConfigMapIfMissing(ctx, h.Client, req.Namespace, bundle)
+		if errors.Is(err, trust.ErrForeignConfigMap) {
+			return foreign(logger)
+		}
 		if err != nil {
 			logger.Error(err, "Cannot publish trust bundle in namespace; admitting unmodified")
 			return admission.Allowed("trust bundle not publishable")
@@ -67,6 +72,11 @@ func (h *Handler) Handle(ctx context.Context, req admission.Request) admission.R
 		if created {
 			logger.Info("Published trust bundle on demand", "configmap", trust.ConfigMapName)
 		}
+	} else if err := h.Source.CheckConfigMap(ctx, h.Client, req.Namespace); errors.Is(err, trust.ErrForeignConfigMap) {
+		return foreign(logger)
+	} else if err != nil {
+		logger.Error(err, "Cannot check trust bundle in namespace; admitting unmodified")
+		return admission.Allowed("trust bundle not checkable")
 	}
 
 	if !trust.InjectPod(pod, bundle) {
@@ -79,6 +89,14 @@ func (h *Handler) Handle(ctx context.Context, req admission.Request) admission.R
 	}
 	logger.V(1).Info("Injected trust bundle", "cas", trust.FingerprintList(bundle.Fingerprints))
 	return admission.PatchResponseFromRaw(req.Object.Raw, marshaled)
+}
+
+// foreign admits a pod unmodified because its namespace's bundle name is
+// taken by someone else's ConfigMap. The pod then does not trust the CA and
+// the reflector trust gate counts it, which is the safe outcome.
+func foreign(logger logr.Logger) admission.Response {
+	logger.Info("Namespace has an unrelated ConfigMap named like the trust bundle; admitting pod without trust injection", "configmap", trust.ConfigMapName)
+	return admission.Allowed("trust bundle name taken by an unrelated ConfigMap")
 }
 
 func podName(req admission.Request) string {
