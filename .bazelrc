@@ -1,12 +1,10 @@
 
-# Firecracker microVM tests (tools/firecracker, e2e/) need /dev/kvm visible
+# Firecracker microVM tests (e2e/, via rules_firecracker) need /dev/kvm visible
 # inside the sandbox. They are tagged `requires-kvm`, so KVM-less hosts can
 # skip them with --test_tag_filters=-requires-kvm. The invoking user must be
 # in the `kvm` group.
 build:kvm --sandbox_add_mount_pair=/dev/kvm
 test:kvm --sandbox_add_mount_pair=/dev/kvm
-# Pass PATH through so the launcher finds the host `firecracker` binary.
-test:kvm --test_env=PATH
 
 # Per-developer overrides (e.g. --override_module=aquaduct_weft=/path/to/weft).
 try-import %workspace%/.bazelrc.user

@@ -1,0 +1,198 @@
+# End-to-end tests for installing and running the operator: Gateway API CRD
+# presence, the chart through real helm, and the operator's lifecycle.
+#
+# Each boots a single-node k3s in an airgapped firecracker microVM (see
+# @rules_firecracker) and runs the scenario binary on the node.
+#
+#   bazel test --config=kvm //e2e/install:crds_test //e2e/install:chart_test
+#
+# crds_test (crds_scenario.go), the operator applied from a chart render:
+#   crds.no-gateway-api          no Gateway API CRDs at all: the operator exits
+#                                with the preflight "Gateway API CRDs are not
+#                                installed" message (previous container's log)
+#                                and crash-loops, never Available;
+#   crds.standard-ready          applying the standard channel makes it Ready;
+#   crds.routes-ignored-logged   it logs exactly TCPRoute, TLSRoute and
+#                                UDPRoute as ignored;
+#   crds.http-gateway-tunnel     an HTTP Gateway (weft-gateway-class) +
+#                                HTTPRoute still produce their WeftTunnel and
+#                                the tunnel Deployment to a WeftServer;
+#   crds.standard-stays-ready    no restart for 3 min, past the 2-minute cache
+#                                sync timeout that used to kill the manager
+#                                when TCPRoute/UDPRoute were not installed;
+#   lifecycle.lease              the weft-operator.aquaduct.dev Lease is held
+#                                by the operator pod and renewed;
+#   lifecycle.probes             /healthz and /readyz on the pod's :8081 are ok;
+#   lifecycle.restart-no-rewrites deleting the operator pod: the new leader
+#                                takes the lease and leaves the tunnel and
+#                                server Deployments alone (same generation,
+#                                same pods, no "Tunnel Deployment reconciled");
+#   crds.experimental-tcproute   after the experimental CRDs + an operator
+#                                restart, a TCPRoute produces a WeftTunnel.
+#
+# chart_test (chart_scenario.go), the packaged //chart:weft_operator through
+# the helm v4 binary in the VM, release weft-operator in weft-system:
+#   chart.unowned-crds-rejected  weft CRDs applied with `kubectl apply` make
+#                                `helm upgrade --install` fail with "invalid
+#                                ownership metadata" (the us-west upgrade);
+#   chart.adopted-install        labelling app.kubernetes.io/managed-by=Helm
+#                                and annotating meta.helm.sh/release-name +
+#                                release-namespace lets the install through;
+#   chart.vpa-auto-installs-stack installController=auto with no VPA API
+#                                installs the VPA CRDs and the three vpa-*
+#                                Deployments (Available on the preloaded
+#                                1.7.0 images), updater --min-replicas=1, and
+#                                no operator VPA yet;
+#   chart.cr-before-upgrade      a WeftServer created under the "old" chart's
+#                                CRDs (built here: the current chart minus the
+#                                spec.location default) has no spec.location;
+#   chart.adopted-upgrade-conflicts the first upgrade that changes an adopted
+#                                CRD fails: helm v4 applies server-side and
+#                                kubectl-client-side-apply owns .spec.versions;
+#   chart.upgrade-crds           `helm upgrade --force-conflicts` updates the
+#                                CRD; the CR keeps its UID and reads back
+#                                location: Internal;
+#   chart.vpa-attached-on-upgrade that upgrade attaches the operator's VPA
+#                                (Off, memory only); the stack is kept;
+#   chart.extra-env              extraEnv is in the Deployment and in the
+#                                running operator's /proc/<pid>/environ;
+#   chart.uninstall              helm uninstall removes the operator, the VPA
+#                                stack, the GatewayClass, the CRDs and with
+#                                them the CRs, EXCEPT the reflector CRD: it is
+#                                stuck Terminating because the operator's
+#                                cluster-default reflector keeps its
+#                                finalizer once the operator is gone (known
+#                                defect, asserted as current behavior; the
+#                                step then removes the finalizer by hand);
+#   chart.take-ownership-vpa-false on unowned CRDs `--take-ownership` alone
+#                                hits the same field-manager conflict, with
+#                                `--force-conflicts` it adopts them; with
+#                                installController=false no vpa-* objects;
+#   chart.vpa-auto-foreign-crd   auto with someone else's VPA CRD installs no
+#                                stack, leaves the CRD unowned and attaches
+#                                the operator's VPA.
+
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("@rules_helm//helm:defs.bzl", "helm_template")
+load("//e2e:defs.bzl", "weft_e2e_test")
+
+go_library(
+    name = "install_lib",
+    srcs = [
+        "chart_scenario.go",
+        "crds_scenario.go",
+        "main.go",
+        "util.go",
+    ],
+    importpath = "aquaduct.dev/weft-operator/e2e/install",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//api/v1alpha1",
+        "//e2e/e2ekit",
+        "@io_k8s_api//apps/v1:apps",
+        "@io_k8s_api//core/v1:core",
+        "@io_k8s_apimachinery//pkg/api/errors",
+        "@io_k8s_apimachinery//pkg/api/meta",
+        "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
+        "@io_k8s_apimachinery//pkg/apis/meta/v1/unstructured",
+        "@io_k8s_apimachinery//pkg/runtime/schema",
+        "@io_k8s_apimachinery//pkg/types",
+        "@io_k8s_client_go//dynamic",
+        "@io_k8s_sigs_controller_runtime//pkg/client",
+        "@io_k8s_sigs_gateway_api//apis/v1:apis",
+    ],
+)
+
+# Static: the microVM rootfs has no libc.
+go_binary(
+    name = "installe2e",
+    embed = [":install_lib"],
+    pure = "on",
+    static = "on",
+    visibility = ["//visibility:public"],
+)
+
+# --- crds_test --------------------------------------------------------------
+
+helm_template(
+    name = "operator_manifest",
+    chart = "//chart:weft_operator",
+    opts = [
+        "--namespace=weft-system",
+        "--name-template=weft-operator",
+    ],
+    values = ["crds-values.yaml"],
+)
+
+weft_e2e_test(
+    name = "crds_test",
+    extra_files = {
+        ":operator_manifest": "/etc/e2e/weft-operator.yaml",
+        "//e2e/images:gateway_api_standard_crds": "/etc/e2e/gateway-api-standard-crds.yaml",
+    },
+    extra_manifests = {
+        "00-namespaces.yaml": "00-namespaces.yaml",
+    },
+    scenario = "crds",
+    test_binary = ":installe2e",
+)
+
+# --- chart_test -------------------------------------------------------------
+
+# An "older release" of the chart: the current one with the WeftServer
+# spec.location default removed (a schema change the upgrade must apply to
+# existing CRs) and an older chart version.
+genrule(
+    name = "chart_old",
+    srcs = ["//chart:weft_operator"],
+    outs = ["weft-operator-old.tgz"],
+    cmd = """
+d=$$(mktemp -d)
+tar -xzf $< -C $$d
+crd=$$d/weft-operator/templates/weft.aquaduct.dev_weftservers.yaml
+grep -q 'default: Internal' $$crd
+sed -i '/default: Internal/d' $$crd
+sed -i 's/^version: .*/version: 0.0.9/' $$d/weft-operator/Chart.yaml
+tar -czf $@ -C $$d weft-operator
+rm -rf $$d
+""",
+)
+
+# The old chart's weft CRDs on their own, as `kubectl apply` would have left
+# them on a cluster whose CRDs Helm never owned.
+genrule(
+    name = "chart_old_crds",
+    srcs = [":chart_old"],
+    outs = ["weft-operator-old-crds.yaml"],
+    cmd = """
+d=$$(mktemp -d)
+tar -xzf $< -C $$d
+for f in $$d/weft-operator/templates/weft.aquaduct.dev_*.yaml; do echo '---'; cat $$f; done > $@
+rm -rf $$d
+""",
+)
+
+weft_e2e_test(
+    name = "chart_test",
+    extra_execs = {
+        "//e2e/images:helm": "/usr/local/bin/helm",
+    },
+    extra_files = {
+        "//chart:weft_operator": "/etc/e2e/weft-operator.tgz",
+        ":chart_old": "/etc/e2e/weft-operator-old.tgz",
+        ":chart_old_crds": "/etc/e2e/weft-operator-old-crds.yaml",
+        "chart-values.yaml": "/etc/e2e/chart-values.yaml",
+    },
+    extra_images = {
+        "//e2e/images:vpa_recommender_tar": "vpa-recommender.tar",
+        "//e2e/images:vpa_updater_tar": "vpa-updater.tar",
+        "//e2e/images:vpa_admission_controller_tar": "vpa-admission-controller.tar",
+    },
+    extra_manifests = {
+        "00-namespaces.yaml": "00-namespaces.yaml",
+    },
+    # The VPA stack requests ~1.2Gi on top of the operator and k3s.
+    mem_mib = 6144,
+    scenario = "chart",
+    test_binary = ":installe2e",
+)

@@ -35,6 +35,7 @@ go_test(
     name = "aquaducttaas_test",
     srcs = [
         "client_test.go",
+        "endpoint_test.go",
         "reconciler_test.go",
         "suite_test.go",
     ],

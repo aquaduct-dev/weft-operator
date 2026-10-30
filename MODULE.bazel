@@ -95,7 +95,7 @@ http_file(
 )
 
 # ---------------------------------------------------------------------------
-# e2e tests (//e2e/...): firecracker_k3s_test microVMs, see tools/firecracker.
+# e2e tests (//e2e/...): firecracker_k3s_test microVMs from rules_firecracker.
 # Everything a test VM runs is pinned here: it is airgapped.
 # ---------------------------------------------------------------------------
 
@@ -110,29 +110,13 @@ git_override(
     remote = "https://github.com/aquaduct-dev/weft.git",
 )
 
-# Firecracker boot kernel source (Linux 6.1.155), built locally by
-# //tools/firecracker:vmlinux against tools/firecracker/vmlinux-6.1.config.
-http_file(
-    name = "firecracker_kernel_src",
-    downloaded_file_path = "linux.tar.xz",
-    sha256 = "c29387aeee085fbcbd91236224b9df805063bac43615e75cea2c6b29604a5c73",
-    urls = ["https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.1.155.tar.xz"],
-)
-
-# Statically-linked busybox for microVM rootfs/initramfs images.
-http_file(
-    name = "busybox_static_x86_64",
-    downloaded_file_path = "busybox",
-    sha256 = "6e123e7f3202a8c1e9b1f94d8941580a25135382b99e8d3e34fb858bba311348",
-    urls = ["https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox"],
-)
-
-# Statically-linked k3s that runs directly on the microVM rootfs.
-http_file(
-    name = "k3s_binary_x86_64",
-    downloaded_file_path = "k3s",
-    sha256 = "fb942b7870d9a88e10d063e9f52b99fa538becca761e2578887e04e5ce167e53",
-    urls = ["https://github.com/k3s-io/k3s/releases/download/v1.30.4+k3s1/k3s"],
+# Firecracker microVM rules: guest kernel, busybox, k3s and the
+# firecracker_k3s_test macro. Bump `commit` to pick up rules changes.
+bazel_dep(name = "rules_firecracker", version = "0.0.0", dev_dependency = True)
+git_override(
+    module_name = "rules_firecracker",
+    commit = "433058ec3f8ba262f1380a1e75863882a5fdfcdc",
+    remote = "https://github.com/aquaduct-dev/rules_firecracker.git",
 )
 
 # Gateway API CRDs; the operator refuses to start without them.
@@ -141,6 +125,26 @@ http_file(
     downloaded_file_path = "gateway-api-experimental-install.yaml",
     sha256 = "0414b160767377e85fd362855501200c6b83b84758bcd532652e3fe1cc677e49",
     urls = ["https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.0/experimental-install.yaml"],
+)
+
+# The standard channel only (no TCPRoute/TLSRoute/UDPRoute), as many
+# clusters install it: the operator must keep running without them.
+http_file(
+    name = "gateway_api_standard_install",
+    downloaded_file_path = "gateway-api-standard-install.yaml",
+    sha256 = "6a4029e661446d64add866a00ecdc40c14219b68777ab614c5cdaac0adb481f1",
+    urls = ["https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.0/standard-install.yaml"],
+)
+
+# helm itself, run inside the VM for chart behavior that needs a live
+# cluster (lookup, Capabilities, upgrades).
+http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+http_archive(
+    name = "helm_linux_amd64",
+    build_file_content = 'exports_files(["linux-amd64/helm"])',
+    sha256 = "29454bc351f4433e66c00f5d37841627cbbcc02e4c70a6d796529d355237671c",
+    urls = ["https://get.helm.sh/helm-v4.0.4-linux-amd64.tar.gz"],
 )
 
 # Mozilla's CA bundle (curl.se extract), installed in the e2e VM at the
@@ -170,8 +174,55 @@ oci.pull(
     image = "docker.io/library/registry",
     platforms = ["linux/amd64"],
 )
+
+# k3s v1.30.4's local-path storage (its provisioner and the helper pod it
+# runs to create volume dirs), so PersistentVolumeClaims bind in the VM.
+oci.pull(
+    name = "k3s_local_path_provisioner",
+    digest = "sha256:f77fa34dd9d000daf6fd6029bf05de6b351b4fe4287cbc0ad2abb11a91df2ced",
+    image = "docker.io/rancher/local-path-provisioner",
+    platforms = ["linux/amd64"],
+)
+oci.pull(
+    name = "k3s_busybox",
+    digest = "sha256:8a45424ddf949bbe9bb3231b05f9032a45da5cd036eb4867b511b00734756d6f",
+    image = "docker.io/rancher/mirrored-library-busybox",
+    platforms = ["linux/amd64"],
+)
+
+# The VPA controllers the chart can bundle (verticalPodAutoscaler.images).
+oci.pull(
+    name = "vpa_recommender",
+    digest = "sha256:7132791f4daa6f76b79a86769f2944f7f7d8547d554d50c62b11f6e23d24c437",
+    image = "registry.k8s.io/autoscaling/vpa-recommender",
+    platforms = ["linux/amd64"],
+)
+oci.pull(
+    name = "vpa_updater",
+    digest = "sha256:eab510b0029d488139ea6cf87e9d7418e9b21797b2bc4479a165f1bab2b8b7bf",
+    image = "registry.k8s.io/autoscaling/vpa-updater",
+    platforms = ["linux/amd64"],
+)
+oci.pull(
+    name = "vpa_admission_controller",
+    digest = "sha256:32954e682b654c6fb9f213e00b67f7992000649ba5881ed3b6efaf52a24d1938",
+    image = "registry.k8s.io/autoscaling/vpa-admission-controller",
+    platforms = ["linux/amd64"],
+)
 use_repo(
     oci,
+    "k3s_busybox",
+    "k3s_busybox_linux_amd64",
+    "k3s_coredns",
     "k3s_coredns_linux_amd64",
+    "k3s_local_path_provisioner",
+    "k3s_local_path_provisioner_linux_amd64",
+    "registry",
     "registry_linux_amd64",
+    "vpa_admission_controller",
+    "vpa_admission_controller_linux_amd64",
+    "vpa_recommender",
+    "vpa_recommender_linux_amd64",
+    "vpa_updater",
+    "vpa_updater_linux_amd64",
 )

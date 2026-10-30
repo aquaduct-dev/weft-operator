@@ -1,0 +1,32 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "e2ekit",
+    srcs = ["e2ekit.go"],
+    importpath = "aquaduct.dev/weft-operator/e2e/e2ekit",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//api/v1alpha1",
+        "//internal/clusterharness",
+        "@io_k8s_api//admissionregistration/v1:admissionregistration",
+        "@io_k8s_api//apps/v1:apps",
+        "@io_k8s_api//core/v1:core",
+        "@io_k8s_apimachinery//pkg/api/errors",
+        "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
+        "@io_k8s_apimachinery//pkg/runtime",
+        "@io_k8s_apimachinery//pkg/types",
+        "@io_k8s_client_go//kubernetes",
+        "@io_k8s_client_go//kubernetes/scheme",
+        "@io_k8s_client_go//rest",
+        "@io_k8s_client_go//tools/clientcmd",
+        "@io_k8s_sigs_controller_runtime//pkg/client",
+        "@io_k8s_sigs_gateway_api//apis/v1:apis",
+        "@io_k8s_sigs_gateway_api//apis/v1alpha2",
+    ],
+)
+
+go_test(
+    name = "e2ekit_test",
+    srcs = ["e2ekit_test.go"],
+    embed = [":e2ekit"],
+)

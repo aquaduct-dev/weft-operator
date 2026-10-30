@@ -18,6 +18,7 @@ package dnsrecord_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -468,6 +469,60 @@ var _ = Describe("DNSRecord Controller", func() {
 		Expect(ready.Status).To(Equal(metav1.ConditionTrue),
 			"DNS records correct => Ready=True even without ownership")
 		Expect(ready.Reason).To(Equal("Ready"))
+	})
+
+	It("Treats a 403 on GET (another user's domain) as ForeignOwned without writing", func(ctx context.Context) {
+		createSecret(ctx, "token", "tok")
+		createTaaS(ctx, "token")
+		mock.setGet(func(ctx context.Context, token, name string) (*aquaducttaas.Domain, error) {
+			return nil, fmt.Errorf("%w (status 403): forbidden", aquaducttaas.ErrDomainForeign)
+		})
+		mock.setLookup(func(ctx context.Context, token, name string) ([]string, error) {
+			return []string{"203.0.113.99"}, nil
+		})
+		createDNSRecord(ctx)
+
+		_, err := reconcile(ctx, newReconciler())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(mock.PutCalls).To(Equal(0))
+		Expect(mock.PatchCalls).To(Equal(0))
+
+		d := getDNSRecord(ctx)
+		reg := findCondition(d.Status.Conditions, "Registered")
+		Expect(reg.Status).To(Equal(metav1.ConditionFalse))
+		Expect(reg.Reason).To(Equal("ForeignOwned"))
+		Expect(findCondition(d.Status.Conditions, "Ready").Reason).To(Equal("Mismatched"))
+
+		By("the foreign record pointing at our bastion reads as externally managed")
+		mock.setLookup(func(ctx context.Context, token, name string) ([]string, error) {
+			return []string{"10.0.0.1"}, nil
+		})
+		_, err = reconcile(ctx, newReconciler())
+		Expect(err).NotTo(HaveOccurred())
+		d = getDNSRecord(ctx)
+		Expect(findCondition(d.Status.Conditions, "Registered").Reason).To(Equal("ExternallyManaged"))
+		Expect(findCondition(d.Status.Conditions, "Ready").Status).To(Equal(metav1.ConditionTrue))
+	})
+
+	It("Sends an explicit empty bastion_ids, not null, when every bastion is suspended", func(ctx context.Context) {
+		createSecret(ctx, "token", "tok")
+		createTaaS(ctx, "token")
+		seedTaaSBastions(ctx, []weftv1alpha1.BastionInfo{{ID: "b1", Name: "b1", IP: "10.0.0.1", Suspended: true}})
+		mock.setGet(func(ctx context.Context, token, name string) (*aquaducttaas.Domain, error) {
+			return &aquaducttaas.Domain{ID: "1", Name: name}, nil
+		})
+		mock.setLookup(func(ctx context.Context, token, name string) ([]string, error) { return nil, nil })
+		createDNSRecord(ctx)
+
+		_, err := reconcile(ctx, newReconciler())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(mock.PatchCalls).To(Equal(1))
+		Expect(mock.LastBastionIDs).NotTo(BeNil())
+		// null would tell the server to keep pointing at the suspended bastions.
+		body, err := json.Marshal(*mock.LastBastionIDs)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(body)).To(Equal("[]"))
+		Expect(findCondition(getDNSRecord(ctx).Status.Conditions, "Resolved").Reason).To(Equal("NoTargets"))
 	})
 
 	It("Recovers when PATCH races with an external deletion", func(ctx context.Context) {

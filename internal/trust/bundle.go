@@ -10,6 +10,7 @@ package trust
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -173,12 +174,68 @@ func EnsureConfigMap(ctx context.Context, c client.Client, namespace string, bun
 	})
 }
 
+// ErrForeignConfigMap means a namespace already has a ConfigMap named
+// ConfigMapName that the operator does not manage. Pods there must not be
+// pointed at it: mounted over their system bundle it would replace their
+// trust store with someone else's data (or fail the mount), while their
+// trusted-cas annotation would tell the trust gate they trust the CA.
+var ErrForeignConfigMap = errors.New("namespace has a ConfigMap named " + ConfigMapName + " that weft-operator does not manage")
+
+// managed reports whether cm is a trust bundle the operator published.
+func managed(cm *corev1.ConfigMap) bool { return cm.Labels[ManagedLabel] == ManagedValue }
+
+// liveConfigMap reads namespace's bundle ConfigMap from the API server. The
+// manager cache only holds operator-labelled ConfigMaps, so it cannot see a
+// foreign one; an empty merge patch is a no-op that returns the live object
+// through c without needing a separate uncached reader.
+func liveConfigMap(ctx context.Context, c client.Client, namespace string) (*corev1.ConfigMap, error) {
+	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: ConfigMapName}}
+	if err := c.Patch(ctx, cm, client.RawPatch(types.MergePatchType, []byte("{}"))); err != nil {
+		return nil, err
+	}
+	return cm, nil
+}
+
+// CheckConfigMap returns ErrForeignConfigMap if namespace's bundle name is
+// taken by a ConfigMap the operator does not manage, without creating
+// anything (for dry runs).
+func (s *Source) CheckConfigMap(ctx context.Context, c client.Client, namespace string) error {
+	cm := &corev1.ConfigMap{}
+	err := s.Reader.Get(ctx, types.NamespacedName{Namespace: namespace, Name: ConfigMapName}, cm)
+	if err == nil {
+		if !managed(cm) {
+			return ErrForeignConfigMap
+		}
+		return nil
+	}
+	if !apierrors.IsNotFound(err) {
+		return err
+	}
+	live, err := liveConfigMap(ctx, c, namespace)
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !managed(live) {
+		return ErrForeignConfigMap
+	}
+	return nil
+}
+
 // CreateConfigMapIfMissing publishes bundle in namespace only if the
 // ConfigMap does not exist yet; updates are left to the reconciler so the
-// two never fight over its content or owners. It reports whether it created.
+// two never fight over its content or owners. It reports whether it created,
+// and returns ErrForeignConfigMap when the name is taken by a ConfigMap the
+// operator does not manage.
 func (s *Source) CreateConfigMapIfMissing(ctx context.Context, c client.Client, namespace string, bundle Bundle) (bool, error) {
-	err := s.Reader.Get(ctx, types.NamespacedName{Namespace: namespace, Name: ConfigMapName}, &corev1.ConfigMap{})
+	existing := &corev1.ConfigMap{}
+	err := s.Reader.Get(ctx, types.NamespacedName{Namespace: namespace, Name: ConfigMapName}, existing)
 	if err == nil {
+		if !managed(existing) {
+			return false, ErrForeignConfigMap
+		}
 		return false, nil
 	}
 	if !apierrors.IsNotFound(err) {
@@ -202,10 +259,19 @@ func (s *Source) CreateConfigMapIfMissing(ctx context.Context, c client.Client, 
 		Data: map[string]string{BundleKey: string(bundle.All), CAsKey: string(bundle.CAs)},
 	}
 	if err := c.Create(ctx, cm); err != nil {
-		if apierrors.IsAlreadyExists(err) {
-			return false, nil
+		if !apierrors.IsAlreadyExists(err) {
+			return false, err
 		}
-		return false, err
+		// Either the reconciler published it moments ago and the cache
+		// has not caught up, or it is someone else's: ask the API server.
+		live, err := liveConfigMap(ctx, c, namespace)
+		if err != nil {
+			return false, err
+		}
+		if !managed(live) {
+			return false, ErrForeignConfigMap
+		}
+		return false, nil
 	}
 	return true, nil
 }

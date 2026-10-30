@@ -1,0 +1,148 @@
+# End-to-end test for the aquaduct.dev integration: AquaductTaaS, DNSRecord
+# and Gateway AutoDNS, with the operator's real HTTP client talking to an
+# in-cluster fake aquaduct.dev.
+#
+# A single-node k3s boots in an airgapped firecracker microVM (see
+# @rules_firecracker) with the operator installed from the real chart
+# (AUTHZ_ENDPOINT pointed at the fake through extraEnv, the GatewayClass
+# created). The guest binary deploys itself as the fake API (fake.go: an
+# in-memory bastion and domain store that only accepts JWTs it minted from
+# the configured access token and follows the real handlers' status codes,
+# with a /_fake control API and an ordered request log) plus a real
+# `weft server` for one bastion, then drives scenario*.go. Pass conditions, in order:
+#
+#   - taas.secret-missing: the TaaS gets its suspend-on-delete finalizer
+#     and Available=False/SecretError, and calls nothing, until the Secret
+#     exists;
+#   - taas.synced: the Secret is pinned with the token-in-use finalizer;
+#     exactly one External WeftServer per active bastion (suspended and
+#     IP-less ones skipped) with the owner label, bastion-id annotation,
+#     weft://<secret>@<ip>:9092 and a controller owner ref; status
+#     syncedServers, bastions, lastSyncTime and Available=True/Synced;
+#   - taas.weftserver-available: the operator really logs into the weft
+#     server behind the mirrored bastion (Available=True), and not into the
+#     one whose address refuses;
+#   - taas.token-cached: one exchange at AUTHZ_ENDPOINT, the JWT reused
+#     for every API call at spec.apiEndpoint;
+#   - taas.token-reexchange: after the fake revokes its JWTs, a 401 is
+#     followed by exactly one re-exchange and a retry that succeeds;
+#   - taas.api-error: a 500 listing bastions gives Available=False/APIError
+#     (mirrors kept), then Synced again;
+#   - taas.prune: a bastion gone upstream loses its WeftServer, then is
+#     mirrored again when it returns;
+#   - dns.register: GET 404, then PUT with every active bastion id;
+#     Registered, Resolved and Ready; domainID, applied ids and IPs;
+#   - dns.mismatched: other IPs from the lookup give Resolved=False/
+#     Mismatched, healing on the 30s requeue once DNS is right;
+#   - dns.target-pinned: targetBastionIDs is the PUT body; an unknown id is
+#     Registered=False/UnknownBastion without any API call;
+#   - dns.clobber: an own pre-existing domain is PATCHed (never PUT) to the
+#     full set and marked clobberedPreexisting;
+#   - dns.foreign: another user's domain (403 on GET, as aquaduct.dev
+#     answers) gives Registered=False/ForeignOwned with no write, and
+#     ExternallyManaged with Ready=True once it resolves to our bastions;
+#     a 409 on PATCH of a readable domain is ForeignOwned too and heals
+#     on the 30s requeue once the conflict goes;
+#   - dns.no-targets: with every bastion suspended the PATCH sends an
+#     explicit bastion_ids [] (null would make the server keep the
+#     suspended set) and the record is Resolved/NoTargets; leftover A
+#     records give UnexpectedRecords; bastions back, it fans out again;
+#   - dns.domain-immutable: the API server refuses a domainName change;
+#   - dns.delete: DELETE then the finalizer goes, also when the domain is
+#     foreign (403) and so left alone;
+#   - gw.records: each listener hostname of a weft-gateway-class Gateway
+#     gets a DNSRecord gw-<gw>-<hash10> in the TaaS namespace with no
+#     targetBastionIDs (fan-out) and the Gateway's labels, and is Ready;
+#   - gw.l4-hostname-rejected: the Gateway API CRDs refuse a hostname on a
+#     TCP listener, so the operator's L4 single-bastion pinning cannot be
+#     reached from a real API server (and is not e2e-tested);
+#   - gw.listener-pruned: removing a listener hostname deletes its record
+#     and its domain;
+#   - gw.deleted: the Gateway's cleanup finalizer deletes its records;
+#   - gw.late: a second Gateway's record is live for the deletion below;
+#   - taas.secret-pinned: deleting the token Secret does not complete while
+#     the TaaS exists;
+#   - taas.delete-order: deleting the TaaS DELETEs every referencing
+#     domain, then suspends every mirrored bastion (no domain writes after
+#     that), then the Secret and the TaaS go, the WeftServers are GC'd and
+#     no DNSRecord comes back;
+#   - gw.delete-without-taas: a Gateway deleted after its TaaS still goes.
+#
+#   bazel test --config=kvm //e2e/aquaduct:aquaduct_test
+
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+load("@rules_helm//helm:defs.bzl", "helm_template")
+load("//e2e:defs.bzl", "e2e_binary_image", "weft_e2e_test")
+
+go_library(
+    name = "aquaduct_lib",
+    srcs = [
+        "fake.go",
+        "helpers.go",
+        "main.go",
+        "scenario.go",
+        "scenario_dns.go",
+        "scenario_gateway.go",
+    ],
+    importpath = "aquaduct.dev/weft-operator/e2e/aquaduct",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//api/v1alpha1",
+        "//e2e/e2ekit",
+        "@io_k8s_api//apps/v1:apps",
+        "@io_k8s_api//core/v1:core",
+        "@io_k8s_apimachinery//pkg/api/errors",
+        "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
+        "@io_k8s_apimachinery//pkg/types",
+        "@io_k8s_apimachinery//pkg/util/intstr",
+        "@io_k8s_sigs_controller_runtime//pkg/client",
+        "@io_k8s_sigs_gateway_api//apis/v1:apis",
+    ],
+)
+
+# The fake against the operator's real HTTP client (no VM).
+go_test(
+    name = "fake_test",
+    srcs = ["fake_test.go"],
+    embed = [":aquaduct_lib"],
+    deps = ["//internal/controller/aquaducttaas"],
+)
+
+# Static: the microVM rootfs has no libc, and the same binary is the fake
+# API's image.
+go_binary(
+    name = "aquaducte2e",
+    embed = [":aquaduct_lib"],
+    pure = "on",
+    static = "on",
+    visibility = ["//visibility:public"],
+)
+
+# The fake aquaduct.dev: this binary in "fake" mode.
+e2e_binary_image(
+    name = "fake",
+    binary = ":aquaducte2e",
+    tag = "ghcr.io/aquaduct-dev/weft-operator-e2e-aquaduct:e2e",
+)
+
+helm_template(
+    name = "operator_manifest",
+    chart = "//chart:weft_operator",
+    opts = [
+        "--namespace=weft-system",
+        "--name-template=weft-operator",
+    ],
+    values = ["e2e-values.yaml"],
+)
+
+weft_e2e_test(
+    name = "aquaduct_test",
+    extra_files = {
+        ":operator_manifest": "/etc/e2e/weft-operator.yaml",
+    },
+    extra_images = {
+        ":fake_tar": "fake.tar",
+    },
+    scenario = "aquaduct",
+    test_binary = ":aquaducte2e",
+)

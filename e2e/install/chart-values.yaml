@@ -1,0 +1,8 @@
+# Values for `helm install` inside the chart_test VM: only the images change
+# (preloaded :e2e tags, never pulled). Everything else is the chart default,
+# including the VPA (installController auto) and the default reflector. The
+# VPA component images default to the 1.7.0 tags the VM preloads.
+image:
+  url: ghcr.io/aquaduct-dev/weft-operator:e2e
+  pullPolicy: Never
+weftImage: ghcr.io/aquaduct-dev/weft:e2e

@@ -39,7 +39,8 @@ spec:
             # WeftLocalDNSReflector runs this same image as its node agent.
             - name: WEFT_OPERATOR_IMAGE
               value: "{{ .Values.image.url }}"
-            # Image for the reflector proxies (`weft proxy`).
+            # weft image for everything the operator runs: tunnel clients,
+            # servers, node probes and reflector proxies.
             - name: WEFT_IMAGE
               value: "{{ .Values.weftImage }}"
             # The operator-managed cluster-default WeftLocalDNSReflector.
@@ -56,6 +57,9 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           ports:
             - name: webhook
               containerPort: 9443

@@ -6,6 +6,7 @@
 package weftlocaldnsreflector
 
 import (
+	weftresource "aquaduct.dev/weft-operator/internal/resource"
 	"context"
 	"fmt"
 	"path"
@@ -63,7 +64,7 @@ func (r *Reconciler) ensureProxy(ctx context.Context, refl *weftv1alpha1.WeftLoc
 
 		c := containerByName(&tmpl.Spec.Containers, "proxy")
 		c.Image = r.WeftImage
-		c.ImagePullPolicy = pullPolicy(r.WeftImage)
+		c.ImagePullPolicy = weftresource.PullPolicy(r.WeftImage)
 		c.Args = proxyArgs(routes.Routes, path.Join(tlsMountPath, corev1.TLSCertKey), path.Join(tlsMountPath, corev1.TLSPrivateKeyKey))
 		c.Ports = []corev1.ContainerPort{
 			{Name: "https", ContainerPort: proxyHTTPSPort, Protocol: corev1.ProtocolTCP},
@@ -155,7 +156,7 @@ func (r *Reconciler) ensureNodeAgent(ctx context.Context, refl *weftv1alpha1.Wef
 
 		c := containerByName(&spec.Containers, "agent")
 		c.Image = r.OperatorImage
-		c.ImagePullPolicy = pullPolicy(r.OperatorImage)
+		c.ImagePullPolicy = weftresource.PullPolicy(r.OperatorImage)
 		c.Args = []string{
 			"node-agent",
 			"--reflector=" + refl.Name,
@@ -229,21 +230,6 @@ func removeVolume(volumes *[]corev1.Volume, name string) {
 		}
 	}
 	*volumes = out
-}
-
-// pullPolicy mirrors the API server's default: always re-pull a floating
-// :latest (or untagged) image, otherwise use what the node has. Setting it
-// explicitly keeps CreateOrUpdate idempotent; Always for a pinned tag would
-// also make the proxy unrunnable on airgapped nodes.
-func pullPolicy(image string) corev1.PullPolicy {
-	if strings.Contains(image, "@") {
-		return corev1.PullIfNotPresent
-	}
-	name := image[strings.LastIndex(image, "/")+1:]
-	if i := strings.LastIndex(name, ":"); i < 0 || name[i+1:] == "latest" {
-		return corev1.PullAlways
-	}
-	return corev1.PullIfNotPresent
 }
 
 // tcpProbe returns a TCP readiness probe on port, keeping any server-set

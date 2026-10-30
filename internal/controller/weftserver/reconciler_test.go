@@ -86,6 +86,8 @@ var _ = Describe("WeftServer Controller", func() {
 			Expect(dep.Spec.Template.Spec.Containers[0].Args).To(ContainElement("server"))
 			Expect(dep.Spec.Template.Spec.Containers[0].Args).To(ContainElement("--bind-ip=0.0.0.0"))
 			Expect(dep.Spec.Template.Spec.Containers[0].Args).To(ContainElement("--certs-cache-path=/var/lib/weft/certs"))
+			// The server must listen where the Service and the status check point.
+			Expect(dep.Spec.Template.Spec.Containers[0].Args).To(ContainElement("--port=8081"))
 			Expect(dep.Spec.Template.Spec.Volumes).To(ContainElement(HaveField("Name", "certs")))
 			Expect(dep.Spec.Template.Spec.Containers[0].VolumeMounts).To(ContainElement(HaveField("MountPath", "/var/lib/weft/certs")))
 
@@ -113,6 +115,43 @@ var _ = Describe("WeftServer Controller", func() {
 				return len(updatedWs.Status.Tunnels)
 			}, timeout, interval).Should(Equal(1))
 			Expect(updatedWs.Status.Tunnels[0].Tx).To(Equal(uint64(100)))
+		})
+
+		It("Should serve a port-less connection string on weft's default port with the configured image", func(ctx context.Context) {
+			ws := &weftv1alpha1.WeftServer{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-server-default-port", Namespace: "default"},
+				Spec: weftv1alpha1.WeftServerSpec{
+					Location:         weftv1alpha1.WeftServerLocationInternal,
+					ConnectionString: "weft://secret@10.0.0.9",
+				},
+			}
+			Expect(k8sClient.Create(ctx, ws)).To(Succeed())
+
+			r := &weftserver.WeftServerReconciler{
+				Client:        k8sClient,
+				Scheme:        k8sClient.Scheme(),
+				WeftImage:     "ghcr.io/aquaduct-dev/weft:e2e",
+				ClientFactory: func(url, tunnelName string) (weftserver.WeftClient, error) { return &mockClient{}, nil },
+			}
+			_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: ws.Name, Namespace: "default"}})
+			Expect(err).NotTo(HaveOccurred())
+
+			dep := &appsv1.Deployment{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{Name: "test-server-default-port-server", Namespace: "default"}, dep)
+			}, timeout, interval).Should(Succeed())
+			c := dep.Spec.Template.Spec.Containers[0]
+			Expect(c.Image).To(Equal("ghcr.io/aquaduct-dev/weft:e2e"))
+			Expect(c.ImagePullPolicy).To(Equal(corev1.PullIfNotPresent))
+			Expect(c.Args).To(ContainElement("--connection-secret=secret"))
+			Expect(c.Args).NotTo(ContainElement(HavePrefix("--port=")))
+
+			svc := &corev1.Service{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{Name: "test-server-default-port-server", Namespace: "default"}, svc)
+			}, timeout, interval).Should(Succeed())
+			Expect(svc.Spec.Ports[0].Port).To(Equal(int32(9092)))
+			Expect(svc.Spec.Ports[0].TargetPort.IntValue()).To(Equal(9092))
 		})
 
 		It("Should bind to 0.0.0.0 even if ExternalIP is available", func(ctx context.Context) {

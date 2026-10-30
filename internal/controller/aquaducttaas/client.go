@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -149,6 +150,28 @@ func NewHTTPAPIClient(endpoint, authzEndpoint string) *HTTPAPIClient {
 		Now:           time.Now,
 		jwts:          map[string]cachedJWT{},
 	}
+}
+
+type endpointKey struct{}
+
+// WithEndpoint returns a context whose API calls go to endpoint instead of
+// the client's default, so one shared client can serve every AquaductTaaS:
+// the reconcilers pass each object's spec.apiEndpoint through here. An
+// empty endpoint leaves the default in place.
+func WithEndpoint(ctx context.Context, endpoint string) context.Context {
+	if endpoint == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, endpointKey{}, strings.TrimRight(endpoint, "/"))
+}
+
+// endpoint is the API base for this call: the context's override, else the
+// client's own Endpoint.
+func (c *HTTPAPIClient) endpoint(ctx context.Context) string {
+	if e, ok := ctx.Value(endpointKey{}).(string); ok {
+		return e
+	}
+	return c.Endpoint
 }
 
 func (c *HTTPAPIClient) now() time.Time {
@@ -286,7 +309,7 @@ func (c *HTTPAPIClient) authedRequest(
 
 func (c *HTTPAPIClient) ListExternalServers(ctx context.Context, token string) ([]ExternalServer, error) {
 	resp, err := c.authedRequest(ctx, token, func(jwt string) (*http.Request, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.Endpoint+apiBasePath+"/bastion", nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint(ctx)+apiBasePath+"/bastion", nil)
 		if err != nil {
 			return nil, err
 		}
@@ -328,7 +351,7 @@ func (c *HTTPAPIClient) SuspendServer(ctx context.Context, token, id string) err
 		return err
 	}
 	resp, err := c.authedRequest(ctx, token, func(jwt string) (*http.Request, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPatch, c.Endpoint+apiBasePath+"/bastion/"+id, bytes.NewReader(body))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPatch, c.endpoint(ctx)+apiBasePath+"/bastion/"+id, bytes.NewReader(body))
 		if err != nil {
 			return nil, err
 		}

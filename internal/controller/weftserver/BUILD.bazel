@@ -44,6 +44,7 @@ go_test(
     srcs = [
         "client_cache_test.go",
         "node_prober_test.go",
+        "probed_ip_test.go",
         "reconciler_test.go",
         "suite_test.go",
     ],

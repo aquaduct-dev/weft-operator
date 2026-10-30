@@ -77,12 +77,13 @@ type Domain struct {
 // The bastionIDs parameter on Put/Patch follows the server's tri-state
 // PATCH convention:
 //   - nil          -> field omitted; server preserves existing value (PATCH)
-//                     or applies "fan out to all caller's bastions" (PUT).
+//     or applies "fan out to all caller's bastions" (PUT).
 //   - &[]          -> explicit empty list; server clears all bastion bindings
-//                     and tears down the cloudflare records.
+//     and tears down the cloudflare records.
 //   - &[ids...]    -> explicit list; server applies exactly these bastions.
 type DomainAPIClient interface {
-	// GetDomain returns the record for `name` or ErrDomainNotFound on 404.
+	// GetDomain returns the record for `name`, ErrDomainNotFound on 404, or
+	// ErrDomainForeign on 403 (the domain belongs to another user).
 	// Any other error (network, 5xx, auth) is surfaced to the caller so
 	// the reconciler can retry and surface a meaningful status.
 	GetDomain(ctx context.Context, token, name string) (*Domain, error)
@@ -158,7 +159,7 @@ type ipLookupResponse struct {
 
 func (c *HTTPAPIClient) GetDomain(ctx context.Context, token, name string) (*Domain, error) {
 	resp, err := c.authedRequest(ctx, token, func(jwt string) (*http.Request, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.Endpoint+apiBasePath+"/domain/"+url.PathEscape(name), nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint(ctx)+apiBasePath+"/domain/"+url.PathEscape(name), nil)
 		if err != nil {
 			return nil, err
 		}
@@ -174,13 +175,20 @@ func (c *HTTPAPIClient) GetDomain(ctx context.Context, token, name string) (*Dom
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, ErrDomainNotFound
 	}
+	// aquaduct.dev owner-checks GET too: another user's domain is a 403,
+	// not a 200 that a later PATCH would be refused on.
+	if resp.StatusCode == http.StatusForbidden {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("%w (status %d): %s", ErrDomainForeign, resp.StatusCode, string(body))
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("aquaduct.dev API returned %d getting domain %q: %s", resp.StatusCode, name, string(body))
 	}
 
 	var d apiDomain
-	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
+	// A 2xx with no body (e.g. 204 No Content) is a success.
+	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("decode domain response: %w", err)
 	}
 	return d.toDomain(), nil
@@ -192,7 +200,7 @@ func (c *HTTPAPIClient) PutDomain(ctx context.Context, token, name string, basti
 		return nil, err
 	}
 	resp, err := c.authedRequest(ctx, token, func(jwt string) (*http.Request, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.Endpoint+apiBasePath+"/domain/"+url.PathEscape(name), bytes.NewReader(body))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.endpoint(ctx)+apiBasePath+"/domain/"+url.PathEscape(name), bytes.NewReader(body))
 		if err != nil {
 			return nil, err
 		}
@@ -212,11 +220,11 @@ func (c *HTTPAPIClient) PutDomain(ctx context.Context, token, name string, basti
 	}
 
 	var d apiDomain
-	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
+	// A 2xx with no body (e.g. 204 No Content) is a success.
+	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("decode domain response: %w", err)
 	}
-	// Some servers return 204 No Content on PUT; if the body was empty
-	// but status was 2xx, synthesize the name from the request so callers
+	// With an empty body, synthesize the name from the request so callers
 	// still get a populated Domain.
 	if d.DomainName == "" {
 		d.DomainName = name
@@ -236,7 +244,7 @@ func (c *HTTPAPIClient) PatchDomain(ctx context.Context, token, name string, bas
 		return nil, err
 	}
 	resp, err := c.authedRequest(ctx, token, func(jwt string) (*http.Request, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPatch, c.Endpoint+apiBasePath+"/domain/"+url.PathEscape(name), bytes.NewReader(body))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPatch, c.endpoint(ctx)+apiBasePath+"/domain/"+url.PathEscape(name), bytes.NewReader(body))
 		if err != nil {
 			return nil, err
 		}
@@ -267,7 +275,8 @@ func (c *HTTPAPIClient) PatchDomain(ctx context.Context, token, name string, bas
 	}
 
 	var d apiDomain
-	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
+	// A 2xx with no body (e.g. 204 No Content) is a success.
+	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("decode domain response: %w", err)
 	}
 	if d.DomainName == "" {
@@ -278,7 +287,7 @@ func (c *HTTPAPIClient) PatchDomain(ctx context.Context, token, name string, bas
 
 func (c *HTTPAPIClient) DeleteDomain(ctx context.Context, token, name string) error {
 	resp, err := c.authedRequest(ctx, token, func(jwt string) (*http.Request, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.Endpoint+apiBasePath+"/domain/"+url.PathEscape(name), nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.endpoint(ctx)+apiBasePath+"/domain/"+url.PathEscape(name), nil)
 		if err != nil {
 			return nil, err
 		}
@@ -312,7 +321,7 @@ func (c *HTTPAPIClient) DeleteDomain(ctx context.Context, token, name string) er
 
 func (c *HTTPAPIClient) LookupDomain(ctx context.Context, token, name string) ([]string, error) {
 	resp, err := c.authedRequest(ctx, token, func(jwt string) (*http.Request, error) {
-		u := c.Endpoint + apiBasePath + "/domain/lookup?domain=" + url.QueryEscape(name)
+		u := c.endpoint(ctx) + apiBasePath + "/domain/lookup?domain=" + url.QueryEscape(name)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 		if err != nil {
 			return nil, err

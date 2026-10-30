@@ -17,6 +17,7 @@ limitations under the License.
 package wefttunnel
 
 import (
+	"aquaduct.dev/weft-operator/internal/resource"
 	"context"
 	"fmt"
 	"slices"
@@ -45,6 +46,9 @@ import (
 type WeftTunnelReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// WeftImage runs the tunnel clients; empty means
+	// resource.DefaultWeftImage.
+	WeftImage string
 }
 
 //+kubebuilder:rbac:groups=weft.aquaduct.dev,resources=wefttunnels,verbs=get;list;watch;create;update;patch;delete
@@ -168,12 +172,19 @@ func (r *WeftTunnelReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			// back — an endless stream of no-op writes, one per tunnel per
 			// reconcile, that buried the logs and hammered the API server.
 			tunnelContainer := containerByName(&dep.Spec.Template.Spec.Containers, "tunnel")
-			tunnelContainer.Image = "ghcr.io/aquaduct-dev/weft:latest" // TODO: Versioning
+			image := resource.WeftImageOr(r.WeftImage)
+			tunnelContainer.Image = image
 			tunnelContainer.Args = cmdArgs
-			tunnelContainer.ImagePullPolicy = corev1.PullAlways
-			err := controllerutil.SetOwnerReference(&weftTunnel, dep, r.Scheme)
+			tunnelContainer.ImagePullPolicy = resource.PullPolicy(image)
+			// A controller reference, not a plain owner reference: Owns()
+			// only maps events from Deployments whose controller is the
+			// tunnel, so with a plain ref the Deployment becoming ready never
+			// re-queued the tunnel and it stayed Available=False/
+			// WaitingForDeployments until something else touched it.
+			// (Upserting replaces an existing plain ref to the same tunnel.)
+			err := controllerutil.SetControllerReference(&weftTunnel, dep, r.Scheme)
 			if err != nil {
-				log.Error(err, "SetOwnerReference failed")
+				log.Error(err, "SetControllerReference failed")
 				return err
 			}
 			return nil

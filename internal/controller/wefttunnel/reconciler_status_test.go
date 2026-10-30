@@ -81,6 +81,13 @@ var _ = Describe("WeftTunnel Controller Status", func() {
 		dep := &appsv1.Deployment{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: depName, Namespace: "default"}, dep)).To(Succeed())
 		
+		// The tunnel must be the Deployment's controller, or Owns() never
+		// re-queues the tunnel when the Deployment becomes ready.
+		ctrlRef := metav1.GetControllerOf(dep)
+		Expect(ctrlRef).NotTo(BeNil())
+		Expect(ctrlRef.Kind).To(Equal("WeftTunnel"))
+		Expect(ctrlRef.Name).To(Equal(tunnel.Name))
+
 		// Update deployment status
 		dep.Status.Replicas = 1
 		dep.Status.ReadyReplicas = 1

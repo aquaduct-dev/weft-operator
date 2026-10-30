@@ -32,6 +32,10 @@ helm_chart(
         "--namespace=weft-system",
         "--install",
         "--create-namespace",
+        # helm 4 applies server-side: without this, the first upgrade after
+        # CRDs were adopted from a kubectl install conflicts with the
+        # kubectl-client-side-apply field manager (//e2e/install:chart_test).
+        "--force-conflicts",
     ],
     values = "values.yaml",
     visibility = ["//visibility:public"],

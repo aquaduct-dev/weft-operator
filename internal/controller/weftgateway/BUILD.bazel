@@ -33,6 +33,7 @@ go_library(
 go_test(
     name = "weftgateway_test",
     srcs = [
+        "fragment_test.go",
         "helpers_test.go",
         "reconciler_test.go",
         "suite_test.go",

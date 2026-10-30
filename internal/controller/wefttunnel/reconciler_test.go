@@ -61,8 +61,9 @@ var _ = Describe("WeftTunnel Controller", func() {
 
 			By("Reconciling")
 			r := &wefttunnel.WeftTunnelReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:    k8sClient,
+				Scheme:    k8sClient.Scheme(),
+				WeftImage: "ghcr.io/aquaduct-dev/weft:e2e",
 			}
 			_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: tunnel.Name, Namespace: tunnel.Namespace}})
 			Expect(err).NotTo(HaveOccurred())
@@ -91,6 +92,9 @@ var _ = Describe("WeftTunnel Controller", func() {
 
 			// Check URL construction for External (should be unchanged)
 			Expect(dep2.Spec.Template.Spec.Containers[0].Args).To(ContainElement("weft://external-host:8080"))
+			// WEFT_IMAGE runs the tunnel; a pinned tag is not re-pulled.
+			Expect(dep2.Spec.Template.Spec.Containers[0].Image).To(Equal("ghcr.io/aquaduct-dev/weft:e2e"))
+			Expect(dep2.Spec.Template.Spec.Containers[0].ImagePullPolicy).To(Equal(corev1.PullIfNotPresent))
 		})
 
 		It("Should create Deployments only for specified TargetServers", func(ctx context.Context) {

@@ -1,0 +1,15 @@
+# Chart values for the airgapped e2e microVM: images are preloaded under
+# these tags, so nothing may be pulled. The chart's GatewayClass is the
+# subject here; the cluster-default reflector is the reflector tests' and
+# stays off so it does not react to the tunnels these tests create.
+image:
+  url: ghcr.io/aquaduct-dev/weft-operator:e2e
+  pullPolicy: Never
+weftImage: ghcr.io/aquaduct-dev/weft:e2e
+verticalPodAutoscaler:
+  enabled: false
+  installController: "false"
+gatewayClass:
+  create: true
+defaultReflector:
+  enabled: false

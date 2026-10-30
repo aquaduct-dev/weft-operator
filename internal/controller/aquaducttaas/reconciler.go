@@ -94,6 +94,7 @@ func (r *AquaductTaaSReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err := r.Get(ctx, req.NamespacedName, &taas); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	ctx = WithEndpoint(ctx, taas.Spec.APIEndpoint)
 
 	if r.APIClient == nil {
 		return r.failure(ctx, &taas, "ConfigError", "AquaductTaaSReconciler has no APIClient configured")

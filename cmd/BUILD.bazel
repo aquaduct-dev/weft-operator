@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_binary", "go_cross_binary", "go_library")
+load("@rules_go//go:def.bzl", "go_binary", "go_cross_binary", "go_library", "go_test")
 load("@rules_oci//oci:defs.bzl", "oci_image", "oci_image_index", "oci_load", "oci_push")
 load("@rules_pkg//:pkg.bzl", "pkg_tar")
 
@@ -16,6 +16,7 @@ go_library(
         "//internal/controller/weftserver",
         "//internal/controller/wefttunnel",
         "//internal/nodeagent",
+        "//internal/resource",
         "//internal/trust",
         "//internal/webhook/trustinjector",
         "@io_k8s_api//core/v1:core",
@@ -24,6 +25,7 @@ go_library(
         "@io_k8s_apimachinery//pkg/runtime",
         "@io_k8s_apimachinery//pkg/selection",
         "@io_k8s_apimachinery//pkg/util/runtime",
+        "@io_k8s_client_go//discovery",
         "@io_k8s_client_go//kubernetes",
         "@io_k8s_client_go//kubernetes/scheme",
         "@io_k8s_client_go//plugin/pkg/client/auth",
@@ -108,4 +110,15 @@ oci_load(
     repo_tags = ["ghcr.io/aquaduct-dev/weft-operator:latest"],
     # For local development, it's often useful to have an alias to load into Docker.
     # The image will be tagged as ghcr.io/aquaduct-dev/weft-operator:latest in the local docker daemon.
+)
+
+go_test(
+    name = "cmd_test",
+    srcs = ["main_test.go"],
+    embed = [":cmd_lib"],
+    deps = [
+        "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
+        "@io_k8s_client_go//discovery/fake",
+        "@io_k8s_client_go//testing",
+    ],
 )
