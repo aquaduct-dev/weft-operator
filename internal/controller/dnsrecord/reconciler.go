@@ -160,7 +160,11 @@ func (r *DNSRecordReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// newly-added bastion would never propagate without a re-PUT.
 	// Sending the full list every time makes PATCH idempotently
 	// converge on AquaductTaaS.status.bastions.
-	ids := append([]string(nil), targetBastionIDs...)
+	// Never nil: a nil slice marshals as `null`, which the server reads as
+	// "leave the existing set unchanged", so once every bastion was
+	// suspended the domain kept pointing at them. An explicit [] is the
+	// server's "fan out to all non-suspended bastions" (none, here).
+	ids := append(make([]string, 0, len(targetBastionIDs)), targetBastionIDs...)
 	bastionIDsForBody := &ids
 
 	// PUT/PATCH and surface the outcome on `Registered`. Mid-loop we
@@ -173,6 +177,19 @@ func (r *DNSRecordReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	_, getErr := r.APIClient.GetDomain(ctx, token, dr.Spec.DomainName)
 	switch {
+	case errors.Is(getErr, aquaducttaas.ErrDomainForeign):
+		// aquaduct.dev refuses even reading another user's domain (403),
+		// so this is the usual way a foreign record shows up; a refused
+		// PATCH below only happens when ownership changes in between.
+		// Same handling: no write, and the lookup decides between
+		// ForeignOwned and ExternallyManaged.
+		logger.Info("GET refused as foreign-owned; will check whether DNS is otherwise correct",
+			"domain", dr.Spec.DomainName)
+		patchForeign = true
+		registeredStatus = metav1.ConditionFalse
+		registeredReason = "ForeignOwned"
+		registeredMessage = fmt.Sprintf("GET /domain/%s refused — record belongs to a different user",
+			dr.Spec.DomainName)
 	case errors.Is(getErr, aquaducttaas.ErrDomainNotFound):
 		created, err := r.APIClient.PutDomain(ctx, token, dr.Spec.DomainName, bastionIDsForBody)
 		if err != nil {
