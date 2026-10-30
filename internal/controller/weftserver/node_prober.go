@@ -17,6 +17,7 @@ limitations under the License.
 package weftserver
 
 import (
+	"aquaduct.dev/weft-operator/internal/resource"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -49,6 +50,8 @@ type NodeProber struct {
 	Client    client.Client
 	Scheme    *runtime.Scheme
 	Clientset kubernetes.Interface
+	// WeftImage runs the probe Jobs; empty means resource.DefaultWeftImage.
+	WeftImage string
 }
 
 //+kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
@@ -167,7 +170,7 @@ func (p *NodeProber) processNode(ctx context.Context, node *corev1.Node) error {
 		log.Info("Skipping node with no valid IP")
 		return nil
 	}
-	
+
 	// Use InternalIP for logging/probing if available, else External
 	probeIP := internalIP
 	if probeIP == "" {
@@ -197,11 +200,11 @@ func (p *NodeProber) processNode(ctx context.Context, node *corev1.Node) error {
 					Containers: []corev1.Container{
 						{
 							Name:  "probe",
-							Image: "ghcr.io/aquaduct-dev/weft:latest", // TODO: Versioning
+							Image: resource.WeftImageOr(p.WeftImage),
 							Args: []string{
 								"probe",
 							},
-							ImagePullPolicy: corev1.PullAlways,
+							ImagePullPolicy: resource.PullPolicy(resource.WeftImageOr(p.WeftImage)),
 						},
 					},
 				},

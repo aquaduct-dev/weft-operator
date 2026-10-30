@@ -132,6 +132,7 @@ func (r *DNSRecordReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 		return ctrl.Result{}, err
 	}
+	ctx = aquaducttaas.WithEndpoint(ctx, taas.Spec.APIEndpoint)
 
 	// Compute the expected A-record set. Source of truth is the
 	// AquaductTaaS's published bastion list, filtered by
@@ -504,6 +505,7 @@ func (r *DNSRecordReconciler) handleDeletion(ctx context.Context, dr *weftv1alph
 		}
 		return ctrl.Result{}, err
 	}
+	ctx = aquaducttaas.WithEndpoint(ctx, taas.Spec.APIEndpoint)
 	_ = taas
 
 	if err := r.APIClient.DeleteDomain(ctx, token, dr.Spec.DomainName); err != nil {

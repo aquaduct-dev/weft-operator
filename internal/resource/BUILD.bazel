@@ -1,14 +1,24 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "resource",
-    srcs = ["resource.go"],
+    srcs = [
+        "image.go",
+        "resource.go",
+    ],
     importpath = "aquaduct.dev/weft-operator/internal/resource",
     visibility = ["//visibility:public"],
+    deps = ["@io_k8s_api//core/v1:core"],
 )
 
 filegroup(
     name = "srcs",
     srcs = glob(["*.go"]),
     visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "resource_test",
+    srcs = ["image_test.go"],
+    embed = [":resource"],
 )

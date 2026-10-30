@@ -237,9 +237,8 @@ Requires a weft image whose `weft proxy` supports `--tls-cert`/`--tls-key` (set 
 ## End-to-end tests
 
 `e2e/` holds hermetic end-to-end tests that boot a single-node k3s inside an
-airgapped firecracker microVM (tooling in `tools/firecracker`, a copy of
-[rules_firecracker](https://github.com/aquaduct-dev/rules_firecracker) with
-the extra kernel netfilter options kube-proxy needs). Every image the VM needs is built or pinned by Bazel and
+airgapped firecracker microVM, using
+[rules_firecracker](https://github.com/aquaduct-dev/rules_firecracker). Every image the VM needs is built or pinned by Bazel and
 preloaded, the operator is installed from the rendered chart, and weft is
 built from source (the `aquaduct_weft` dev dependency in `MODULE.bazel`).
 
@@ -247,7 +246,7 @@ built from source (the `aquaduct_weft` dev dependency in `MODULE.bazel`).
 bazel test --config=kvm //e2e/...
 ```
 
-The host needs `/dev/kvm` (user in the `kvm` group), `firecracker` on `PATH`,
+The host needs `/dev/kvm` (user in the `kvm` group; firecracker itself is pinned by the rules)
 and gcc/make/flex/bison/libelf-dev for the one-time guest kernel build.
 KVM-less hosts can skip these tests with `--test_tag_filters=-requires-kvm`.
 

@@ -17,6 +17,7 @@ limitations under the License.
 package main
 
 import (
+	"aquaduct.dev/weft-operator/internal/resource"
 	"context"
 	"flag"
 	"os"
@@ -32,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/selection"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -151,17 +153,22 @@ func main() {
 		os.Exit(1)
 	}
 
+	// WEFT_IMAGE runs everything the operator starts from weft: tunnel
+	// clients, servers, node probes and reflector proxies.
+	weftImage := envOr("WEFT_IMAGE", resource.DefaultWeftImage)
 	if err := (&weftserver.WeftServerReconciler{
 		Client:    mgr.GetClient(),
 		Scheme:    mgr.GetScheme(),
 		Clientset: clientset,
+		WeftImage: weftImage,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "WeftServer")
 		os.Exit(1)
 	}
 	if err := (&wefttunnel.WeftTunnelReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		WeftImage: weftImage,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "WeftTunnel")
 		os.Exit(1)
@@ -185,9 +192,19 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "DNSRecord")
 		os.Exit(1)
 	}
+	missingRoutes, err := missingRouteKinds(clientset.Discovery())
+	if err != nil {
+		setupLog.Error(err, "failed to query Gateway API route CRDs")
+		os.Exit(1)
+	}
+	for kind := range missingRoutes {
+		setupLog.Info("Gateway API CRD not installed; its routes are ignored until the operator restarts", "kind", kind,
+			"groupVersion", gatewayv1alpha2.GroupVersion.String())
+	}
 	if err := (&weftgateway.WeftGatewayReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		MissingRouteKinds: missingRoutes,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "WeftGateway")
 		os.Exit(1)
@@ -230,7 +247,7 @@ func main() {
 		Client:             mgr.GetClient(),
 		APIReader:          mgr.GetAPIReader(),
 		Scheme:             mgr.GetScheme(),
-		WeftImage:          envOr("WEFT_IMAGE", "ghcr.io/aquaduct-dev/weft:latest"),
+		WeftImage:          weftImage,
 		OperatorImage:      os.Getenv("WEFT_OPERATOR_IMAGE"),
 		Trust:              trustSource,
 		ExcludedNamespaces: webhookCfg.ExcludedNamespaces,
@@ -283,6 +300,32 @@ func reflectorOwnedOnly() map[client.Object]cache.ByObject {
 	return map[client.Object]cache.ByObject{
 		&corev1.ConfigMap{}: {Label: sel},
 	}
+}
+
+// missingRouteKinds returns the optional Gateway API route kinds the
+// cluster does not serve. Only the experimental channel installs them, and
+// a watch on an unserved kind would stop the manager (see
+// weftgateway.WeftGatewayReconciler.MissingRouteKinds).
+func missingRouteKinds(d discovery.DiscoveryInterface) (map[string]bool, error) {
+	served := map[string]bool{}
+	list, err := d.ServerResourcesForGroupVersion(gatewayv1alpha2.GroupVersion.String())
+	switch {
+	case apierrors.IsNotFound(err):
+		// No v1alpha2 at all: every optional kind is missing.
+	case err != nil:
+		return nil, err
+	default:
+		for _, r := range list.APIResources {
+			served[r.Kind] = true
+		}
+	}
+	missing := map[string]bool{}
+	for _, kind := range weftgateway.OptionalRouteKinds {
+		if !served[kind] {
+			missing[kind] = true
+		}
+	}
+	return missing, nil
 }
 
 // splitList parses a comma-separated env value, dropping empty entries.

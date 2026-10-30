@@ -4,8 +4,14 @@ image:
   url: {@//cmd:weft_operator_image_push}
   pullPolicy: Always
 
-# weft image run by WeftLocalDNSReflector proxies (needs `weft proxy --tls-cert`).
+# weft image for everything the operator runs: tunnel clients, servers, node
+# probes and WeftLocalDNSReflector proxies (needs `weft proxy --tls-cert`).
 weftImage: ghcr.io/aquaduct-dev/weft:latest
+
+# Extra environment variables for the operator container, e.g.
+#   - name: AUTHZ_ENDPOINT   # where AquaductTaaS access tokens are exchanged
+#     value: https://authz.example.com
+extraEnv: []
 
 # A cluster-default WeftLocalDNSReflector, created and kept in place by the
 # operator, so in-cluster traffic to weft-published hostnames stays in the

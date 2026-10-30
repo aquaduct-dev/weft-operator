@@ -37,8 +37,8 @@ type AquaductTaaSSpec struct {
 	// config (env on the Deployment), defaulting to https://authz.aquaduct.dev.
 	AccessTokenSecretRef *corev1.SecretKeySelector `json:"accessTokenSecretRef,omitempty"`
 
-	// APIEndpoint optionally overrides the aquaduct.dev API endpoint.
-	// Defaults to https://api.aquaduct.dev when empty.
+	// APIEndpoint optionally overrides the aquaduct.dev API base URL; requests
+	// go to <apiEndpoint>/api/.... Defaults to https://aquaduct.dev when empty.
 	APIEndpoint string `json:"apiEndpoint,omitempty"`
 }
 

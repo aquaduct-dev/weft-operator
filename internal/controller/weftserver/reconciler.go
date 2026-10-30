@@ -54,6 +54,10 @@ import (
 // writes.
 const statusRefreshInterval = 30 * time.Second
 
+// defaultServerPort is weft server's own default listen port, used when the
+// connection string has none.
+const defaultServerPort = 9092
+
 // WeftClient defines the interface for interacting with the weft server
 type WeftClient interface {
 	ListTunnels() (map[string]weftclient.TunnelInfo, error)
@@ -73,6 +77,9 @@ type WeftServerReconciler struct {
 	Scheme        *runtime.Scheme
 	ClientFactory WeftClientFactory
 	Clientset     kubernetes.Interface
+	// WeftImage runs the server and the node probes; empty means
+	// resource.DefaultWeftImage.
+	WeftImage string
 
 	// weftClients keeps one logged-in client per connection string. Each
 	// weft client owns its own http.Transport, which keeps its keep-alive
@@ -160,8 +167,9 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		"instance": weftServer.Name,
 	}
 
-	// Parse port from ConnectionString
-	port := int32(8080) // Default
+	// Parse port from ConnectionString. weft listens on 9092 unless told
+	// otherwise, and the status check dials 9092 for a port-less string.
+	port := int32(defaultServerPort)
 	var connectionSecret string
 	// Always bind to 0.0.0.0 to listen on all interfaces
 	bindIP := "0.0.0.0"
@@ -177,7 +185,7 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		// The secret is stored as the username in the URL (weft://<secret>@<host>)
 		connectionSecret = u.User.Username()
 	} else {
-		log.Error(err, "Failed to parse ConnectionString, using default port 8080")
+		log.Error(err, "Failed to parse ConnectionString, using the default port", "port", defaultServerPort)
 	}
 
 	// Construct command arguments
@@ -187,6 +195,11 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 	if bindIP != "" {
 		cmdArgs = append(cmdArgs, fmt.Sprintf("--bind-ip=%s", bindIP))
+	}
+	// Only when it differs from weft's default, so existing servers' args
+	// (and pods) are unchanged.
+	if port != defaultServerPort {
+		cmdArgs = append(cmdArgs, fmt.Sprintf("--port=%d", port))
 	}
 	if weftServer.Spec.BindInterface != "" {
 		cmdArgs = append(cmdArgs, fmt.Sprintf("--bind-interface=%s", weftServer.Spec.BindInterface))
@@ -267,44 +280,44 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 				dep.Spec.Selector = &metav1.LabelSelector{
 					MatchLabels: labels,
 				}
-				                dep.Spec.Replicas = int32Ptr(1)
-				                dep.Spec.Strategy.Type = appsv1.RecreateDeploymentStrategyType
-				                dep.Spec.Template.ObjectMeta.Labels = labels
-				                dep.Spec.Template.Spec.HostNetwork = true
-				                dep.Spec.Template.Spec.Affinity = &corev1.Affinity{
-				                    NodeAffinity: &corev1.NodeAffinity{
-				                        				RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{				                            NodeSelectorTerms: []corev1.NodeSelectorTerm{
-				                                {
-				                                    MatchExpressions: []corev1.NodeSelectorRequirement{
-				                                        {
-				                                            Key:      "node.kubernetes.io/role",
-				                                            Operator: corev1.NodeSelectorOpNotIn,
-				                                            Values:   []string{"autoscaler-node"},
-				                                        },
-				                                    },
-				                                },
-				                            },
-				                        },
-				                    },
-				                }
-				                dep.Spec.Template.Spec.Volumes = []corev1.Volume{
-				                    {
-				                        Name: "certs",
-				                        VolumeSource: corev1.VolumeSource{
-				                            PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-				                                ClaimName: pvc.Name,
-				                            },
-				                        },
-				                    },
-				                }
-				
+				dep.Spec.Replicas = int32Ptr(1)
+				dep.Spec.Strategy.Type = appsv1.RecreateDeploymentStrategyType
+				dep.Spec.Template.ObjectMeta.Labels = labels
+				dep.Spec.Template.Spec.HostNetwork = true
+				dep.Spec.Template.Spec.Affinity = &corev1.Affinity{
+					NodeAffinity: &corev1.NodeAffinity{
+						RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{NodeSelectorTerms: []corev1.NodeSelectorTerm{
+							{
+								MatchExpressions: []corev1.NodeSelectorRequirement{
+									{
+										Key:      "node.kubernetes.io/role",
+										Operator: corev1.NodeSelectorOpNotIn,
+										Values:   []string{"autoscaler-node"},
+									},
+								},
+							},
+						},
+						},
+					},
+				}
+				dep.Spec.Template.Spec.Volumes = []corev1.Volume{
+					{
+						Name: "certs",
+						VolumeSource: corev1.VolumeSource{
+							PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+								ClaimName: pvc.Name,
+							},
+						},
+					},
+				}
+
 				dep.Spec.Template.Spec.Containers = []corev1.Container{
 					{
 						Name:            "server",
-						Image:           "ghcr.io/aquaduct-dev/weft:latest", // TODO: Versioning
+						Image:           resource.WeftImageOr(r.WeftImage),
 						Args:            cmdArgs,
 						Env:             envVars,
-						ImagePullPolicy: corev1.PullAlways,
+						ImagePullPolicy: resource.PullPolicy(resource.WeftImageOr(r.WeftImage)),
 						VolumeMounts: []corev1.VolumeMount{
 							{
 								Name:      "certs",
@@ -355,10 +368,10 @@ func (r *WeftServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 				dep.Spec.Template.Spec.Containers = []corev1.Container{
 					{
 						Name:            "server",
-						Image:           "ghcr.io/aquaduct-dev/weft:latest", // TODO: Versioning
+						Image:           resource.WeftImageOr(r.WeftImage),
 						Args:            cmdArgs,
 						Env:             envVars,
-						ImagePullPolicy: corev1.PullAlways,
+						ImagePullPolicy: resource.PullPolicy(resource.WeftImageOr(r.WeftImage)),
 						VolumeMounts: []corev1.VolumeMount{
 							{
 								MountPath: certsPath,
@@ -582,7 +595,7 @@ func int32Ptr(i int32) *int32 {
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *WeftServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	if err := mgr.Add(&NodeProber{Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Clientset: r.Clientset}); err != nil {
+	if err := mgr.Add(&NodeProber{Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Clientset: r.Clientset, WeftImage: r.WeftImage}); err != nil {
 		return err
 	}
 

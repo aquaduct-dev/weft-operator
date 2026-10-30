@@ -120,21 +120,6 @@ func TestRenderCoreDNS(t *testing.T) {
 	}
 }
 
-func TestPullPolicy(t *testing.T) {
-	for image, want := range map[string]string{
-		"ghcr.io/aquaduct-dev/weft:latest":     "Always",
-		"ghcr.io/aquaduct-dev/weft":            "Always",
-		"localhost:5000/weft":                  "Always",
-		"ghcr.io/aquaduct-dev/weft:e2e":        "IfNotPresent",
-		"localhost:5000/weft:v1":               "IfNotPresent",
-		"ghcr.io/aquaduct-dev/weft@sha256:abc": "IfNotPresent",
-	} {
-		if got := string(pullPolicy(image)); got != want {
-			t.Errorf("pullPolicy(%q) = %s, want %s", image, got, want)
-		}
-	}
-}
-
 func reflector(name string, age int, all bool, hosts ...string) weftv1alpha1.WeftLocalDNSReflector {
 	return weftv1alpha1.WeftLocalDNSReflector{
 		ObjectMeta: metav1.ObjectMeta{Name: name, CreationTimestamp: metav1.NewTime(time.Date(2026, 1, 1, 0, age, 0, 0, time.UTC))},

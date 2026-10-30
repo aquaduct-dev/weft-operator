@@ -68,7 +68,18 @@ const (
 type WeftGatewayReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+
+	// MissingRouteKinds lists the optional (experimental-channel) route
+	// kinds whose CRDs the cluster does not serve: "TCPRoute", "TLSRoute",
+	// "UDPRoute". They are neither watched nor listed, since a watch on an
+	// unserved kind never syncs and stops the whole manager after the cache
+	// sync timeout. Nil means every kind is served.
+	MissingRouteKinds map[string]bool
 }
+
+// OptionalRouteKinds are the Gateway API route kinds that only the
+// experimental channel installs.
+var OptionalRouteKinds = []string{"TCPRoute", "TLSRoute", "UDPRoute"}
 
 //+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=get;list;watch;update;patch
 //+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways/status,verbs=get;update;patch
@@ -283,7 +294,9 @@ func (r *WeftGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	// Find TCPRoutes attached to this Gateway
 	var tcpRoutes gatewayv1alpha2.TCPRouteList
-	if err := r.List(ctx, &tcpRoutes, client.InNamespace(req.Namespace)); err != nil {
+	if r.MissingRouteKinds["TCPRoute"] {
+		// CRD not installed: nothing can attach (see MissingRouteKinds).
+	} else if err := r.List(ctx, &tcpRoutes, client.InNamespace(req.Namespace)); err != nil {
 		log.Error(err, "Failed to list TCPRoutes")
 		// Continue with other route types
 	} else {
@@ -353,7 +366,9 @@ func (r *WeftGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	// Find TLSRoutes attached to this Gateway (TLS passthrough)
 	var tlsRoutes gatewayv1alpha2.TLSRouteList
-	if err := r.List(ctx, &tlsRoutes, client.InNamespace(req.Namespace)); err != nil {
+	if r.MissingRouteKinds["TLSRoute"] {
+		// CRD not installed: nothing can attach (see MissingRouteKinds).
+	} else if err := r.List(ctx, &tlsRoutes, client.InNamespace(req.Namespace)); err != nil {
 		log.Error(err, "Failed to list TLSRoutes")
 		// Continue with other route types
 	} else {
@@ -411,7 +426,9 @@ func (r *WeftGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	// Find UDPRoutes attached to this Gateway
 	var udpRoutes gatewayv1alpha2.UDPRouteList
-	if err := r.List(ctx, &udpRoutes, client.InNamespace(req.Namespace)); err != nil {
+	if r.MissingRouteKinds["UDPRoute"] {
+		// CRD not installed: nothing can attach (see MissingRouteKinds).
+	} else if err := r.List(ctx, &udpRoutes, client.InNamespace(req.Namespace)); err != nil {
 		log.Error(err, "Failed to list UDPRoutes")
 		// Continue with other route types
 	} else {
@@ -894,24 +911,12 @@ func (r *WeftGatewayReconciler) updateGatewayStatus(ctx context.Context, gw *gat
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *WeftGatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&gatewayv1.Gateway{}).
 		Owns(&weftv1alpha1.WeftTunnel{}).
 		Watches(
 			&gatewayv1.HTTPRoute{},
 			handler.EnqueueRequestsFromMapFunc(r.findGatewaysForHTTPRoute),
-		).
-		Watches(
-			&gatewayv1alpha2.TCPRoute{},
-			handler.EnqueueRequestsFromMapFunc(r.findGatewaysForTCPRoute),
-		).
-		Watches(
-			&gatewayv1alpha2.TLSRoute{},
-			handler.EnqueueRequestsFromMapFunc(r.findGatewaysForTLSRoute),
-		).
-		Watches(
-			&gatewayv1alpha2.UDPRoute{},
-			handler.EnqueueRequestsFromMapFunc(r.findGatewaysForUDPRoute),
 		).
 		Watches(
 			&gatewayv1.GatewayClass{},
@@ -920,8 +925,17 @@ func (r *WeftGatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(
 			&weftv1alpha1.AquaductTaaS{},
 			handler.EnqueueRequestsFromMapFunc(r.findGatewaysForAquaductTaaS),
-		).
-		Complete(r)
+		)
+	if !r.MissingRouteKinds["TCPRoute"] {
+		b = b.Watches(&gatewayv1alpha2.TCPRoute{}, handler.EnqueueRequestsFromMapFunc(r.findGatewaysForTCPRoute))
+	}
+	if !r.MissingRouteKinds["TLSRoute"] {
+		b = b.Watches(&gatewayv1alpha2.TLSRoute{}, handler.EnqueueRequestsFromMapFunc(r.findGatewaysForTLSRoute))
+	}
+	if !r.MissingRouteKinds["UDPRoute"] {
+		b = b.Watches(&gatewayv1alpha2.UDPRoute{}, handler.EnqueueRequestsFromMapFunc(r.findGatewaysForUDPRoute))
+	}
+	return b.Complete(r)
 }
 
 // findGatewaysForAquaductTaaS re-enqueues every Gateway managed by

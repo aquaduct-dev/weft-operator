@@ -24,6 +24,7 @@ go_library(
     deps = [
         "//api/v1alpha1",
         "//internal/pki",
+        "//internal/resource",
         "//internal/trust",
         "@io_k8s_api//apps/v1:apps",
         "@io_k8s_api//core/v1:core",
