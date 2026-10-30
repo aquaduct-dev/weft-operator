@@ -1,18 +1,16 @@
-<!-- docdaemon ts:2026-10-29T20:36:21Z hash:bc39f58e40d1bfa9 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-30T02:59:58Z hash:bd85af4ffbb111bf model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file implements the `WeftTunnel` controller, which manages lifecycle and connectivity for tunnels between Kubernetes namespaces.
+This file implements the `WeftTunnel` controller, which manages one-to-one tunnel deployments between a WeftTunnel resource and target WeftServers.
 
-### Purpose
-The `WeftTunnelReconciler` ensures that a tunnel exists between a source URL (`SrcURL`) and destination URL (`DstURL`) for one or more target servers. It creates a dedicated Deployment per target server to run the tunnel agent.
+### Key Components
 
-### Key Functions
+*   **`WeftTunnelReconciler`**: The main reconciliation loop. It resolves target servers (either explicit or all in namespace/weft-system), constructs tunnel URLs, and ensures corresponding `Deployment` resources exist.
+*   **Deployment Management**: Uses `controllerutil.CreateOrUpdate` to maintain tunnel pods. It employs `SetControllerReference` so that Deployment readiness events trigger re-reconciliation of the parent WeftTunnel.
+*   **Pruning**: Lists existing deployments labeled with the tunnel name and deletes any not currently expected, ensuring no orphaned resources remain.
+*   **Status Updates**: The deferred `updateStatus` function checks if all associated deployments have `ReadyReplicas > 0`, setting the `Available` condition accordingly.
+*   **Watch Logic**: `SetupWithManager` watches for changes to `WeftServer` objects. The `findTunnelsForServer` mapper enqueues relevant tunnels based on namespace and target server matching logic, using `GenerationChangedPredicate` to avoid churn from status-only updates.
 
-*   **`Reconcile`**: The main loop. It identifies target `WeftServer` objects (either explicitly listed in `Spec.TargetServers` or all servers in the namespace plus `weft-system`). For each server, it constructs a unique Deployment named `tunnel-<tunnel>-to-<server>`. It uses `controllerutil.CreateOrUpdate` to ensure the deployment matches the desired spec, including the correct container image and arguments. Finally, it prunes any existing deployments owned by this tunnel that are no longer needed.
-*   **`updateStatus`**: Deferred at the end of `Reconcile`, this function checks if all associated tunnel Deployments have `ReadyReplicas > 0`. It sets the `Available` condition on the `WeftTunnel` status accordingly.
-*   **`SetupWithManager`**: Configures the controller to watch `WeftTunnel` resources and `WeftServer` resources. It filters `WeftServer` updates using `GenerationChangedPredicate` to avoid unnecessary reconciliations triggered by status-only changes (like traffic counters).
-*   **`findTunnelsForServer`**: Maps `WeftServer` events to relevant `WeftTunnel` requests. It mirrors the logic in `Reconcile` to determine which tunnels should be re-enqueued when a server changes.
+### Implementation Notes
 
-### Implementation Details
-*   **Container Mutation**: The code carefully mutates existing containers in place via `containerByName` rather than replacing the slice. This prevents accidental loss of API-server-defaulted fields (e.g., resource limits) which would cause endless reconciliation loops.
-*   **Readiness**: Uses `ReadyReplicas` directly instead of `AvailableReplicas` for immediate feedback, supported by setting `MinReadySeconds: 15` on the Deployment.
-*   **Target Selection**: Tunnels with empty `TargetServers` connect to all local servers and those in `weft-system`. Explicit targets are resolved within the tunnel's own namespace.
+*   **Container Mutation**: The code mutates existing container fields in-place via `containerByName` rather than replacing the slice. This prevents unnecessary API writes caused by API server defaults being stripped and restored on every reconcile cycle.
+*   **Readiness Signal**: Readiness is determined by `ReadyReplicas` rather than `AvailableReplicas`, combined with a `MinReadySeconds` of 15s on the Deployment to filter out transient pod flapping.

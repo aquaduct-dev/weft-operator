@@ -1,34 +1,37 @@
-<!-- docdaemon ts:2026-10-29T20:37:07Z hash:1aec0b939851d77a model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-30T03:00:10Z hash:643ccc832df01fbd model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This directory implements the WeftServer controller, managing custom resources and node discovery.
+The `weftserver` controller manages the lifecycle of WeftServer resources, ensuring correct deployment and status synchronization.
 
 ## Overview
-The `weftserver` package provides the Kubernetes controller logic for provisioning and monitoring WeftServers. It ensures that eligible nodes have associated server instances by probing connectivity and reconciling infrastructure resources like Deployments and Services. The controller also maintains live status metrics by polling connected servers efficiently.
+This package implements the Kubernetes controller for `WeftServer` custom resources. It handles the creation and maintenance of underlying infrastructure, including Deployments, Services, and PersistentVolumeClaims, while actively polling server metrics to update resource status. Additionally, it includes a background node prober that automatically discovers nodes with public connectivity and provisions corresponding servers.
 
 ## Deep Dive
+
+### Reconciliation Logic
+The `WeftServerReconciler` watches for changes in the `WeftServer` spec. Upon reconciliation, it parses connection strings to configure server arguments and applies node affinity rules to avoid scheduling on ephemeral autoscaler nodes. It uses a generic resource helper to idempotently manage PVCs, Deployments, and Services. To prevent write-loops caused by changing byte counters in status updates, the reconciler employs semantic equality checks before committing status changes.
+
+### Client Caching
+Historically, frequent status polling created new HTTP transports per cycle, leading to connection leaks. The reconciler now caches one `WeftClient` per connection string. This optimization prevents memory exhaustion and goroutine leaks by reusing existing TLS connections during periodic status refreshes.
+
 ### Node Probing
-The `NodeProber` runs a background loop to discover new nodes and provision WeftServers where missing. It creates ephemeral probe Jobs to validate connectivity, extracts public IPs from logs, and cleans up orphaned resources when nodes are removed. Probe jobs use short TTLs to prevent artifact accumulation.
-
-### Reconciliation
-The `WeftServerReconciler` manages the lifecycle of WeftServer CRDs. For internal locations, it deploys a Deployment, Service, and PVC with specific affinity rules to avoid autoscaler nodes. External locations skip resource creation but still update status. The reconciler binds servers to `0.0.0.0` to ensure consistent network accessibility.
-
-### Status & Caching
-To maintain accurate Tx/Rx counters, the reconciler polls Weft servers every 30 seconds. A client cache prevents connection leaks by reusing HTTP transports per connection string. Status updates are optimized to skip API writes if no changes occurred, preventing watch loops that could starve the controller manager.
+The `NodeProber` runs as a manager runnable every three hours. It detects nodes lacking an associated `WeftServer` and creates short-lived probe Jobs using `HostNetwork`. These jobs verify external reachability and extract public IPv4 addresses from logs. If successful, a new `WeftServer` CRD is created. The prober also cleans up orphaned servers linked to deleted nodes.
 
 ## Key Interfaces
-*   `NodeProber`: Background component for node discovery and server provisioning.
-*   `WeftServerReconciler`: Controller reconciling WeftServer custom resources.
-*   `WeftClient`: Interface for interacting with Weft server APIs.
+*   `WeftServerReconciler`: Main controller struct managing WeftServer resources.
+*   `NodeProber`: Background runnable for automatic server provisioning based on node availability.
+*   `WeftClient`: Interface for communicating with running Weft servers to scrape tunnel statistics.
 
 ## Dependencies
-*   Kubernetes API (`core/v1`, `apps/v1`, `batch/v1`)
-*   controller-runtime framework
-*   Ginkgo/Gomega (testing)
+*   `k8s.io/api/core/v1`, `apps/v1`, `batch/v1`: Kubernetes API types for Pods, Deployments, and Jobs.
+*   `controller-runtime`: Framework for building controllers and managing the reconciliation loop.
+*   `internal/resource`: Helper utilities for idempotent resource creation and updates.
+*   `api/v1alpha1`: Definitions for the `WeftServer` Custom Resource Definition.
 
 ## Subcomponents
-*   `node_prober.go`: Node discovery and provisioning logic.
-*   `reconciler.go`: Main reconciliation loop and resource management.
-*   `client_cache_test.go`: Tests for client reuse and leak prevention.
-*   `node_prober_test.go`: Unit tests for orphan cleanup.
-*   `reconciler_test.go`: Integration tests for resource lifecycle.
-*   `suite_test.go`: Test environment bootstrap.
+*   `reconciler.go`: Core reconciliation logic for WeftServer resources.
+*   `node_prober.go`: Background job for discovering nodes and auto-provisioning servers.
+*   `client_cache_test.go`: Tests for client caching mechanisms to prevent leaks.
+*   `reconciler_test.go`: Integration tests for the main reconciliation loop.
+*   `node_prober_test.go`: Unit tests for orphan cleanup and node probing logic.
+*   `probed_ip_test.go`: Tests for parsing public IPs from probe logs.
+*   `suite_test.go`: Test suite bootstrap using envtest.

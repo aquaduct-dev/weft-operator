@@ -1,35 +1,32 @@
-<!-- docdaemon ts:2026-10-29T20:37:07Z hash:4ff0fec17f1399c2 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-30T03:00:09Z hash:087f6ecfb0024318 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-The trust injector webhook manages PKI certificates and handles admission requests to inject in-cluster DNS resolution capabilities into pods.
+The `trustinjector` package implements a mutating admission webhook that injects WeftLocalDNSReflector CA trust bundles into pods.
 
 ## Overview
-This directory implements a mutating admission webhook that intercepts pod creation events to inject WeftLocalDNSReflector CA certificates. It ensures that intra-cluster traffic, particularly to public hostnames, is routed through WireGuard tunnels rather than hairpinning through bastion hosts, thereby reducing latency for bulk operations like image registry pulls. The package also manages the lifecycle of TLS serving certificates and registers the webhook configuration with the Kubernetes API server.
+This directory provides the core logic for ensuring cluster pods trust the local DNS reflector’s certificates, enabling secure in-cluster traffic routing. It manages the lifecycle of serving TLS certificates and registers the MutatingWebhookConfiguration with the Kubernetes API server to intercept pod creation events. The system is designed to be resilient, ignoring failures to prevent cluster-wide outages while respecting explicit opt-out mechanisms.
 
 ## Deep Dive
 ### Webhook Handler
-The `Handler` struct processes admission reviews for Pod resources. It checks for opt-out annotations via `trust.OptedOut` and builds the current trust bundle using `trust.Source.Build`. If the bundle is non-empty, it ensures the namespace-specific ConfigMap containing the trust bundle exists by calling `CreateConfigMapIfMissing`, skipping this step during dry-run requests to avoid side effects. The handler then injects the CA bundle into the pod's volumes and environment variables using `trust.InjectPod`. Errors result in an "Allowed" response with an unmodified pod, ensuring the webhook failure policy of `Ignore` prevents blocking pod creation.
+The `Handler` processes admission requests by decoding pod specs and checking for opt-out annotations or labels. If injection is required, it constructs the current trust bundle using `trust.Source` and ensures a corresponding ConfigMap exists in the target namespace. To avoid conflicts, it rejects injection if a foreign ConfigMap already occupies the expected name. The handler modifies the pod spec to mount the trust bundle volume and configure container environments, returning a JSON patch. The webhook uses a `failurePolicy: Ignore` strategy, admitting unmodified pods if errors occur, which prevents operator unavailability from blocking cluster operations. Dry runs are supported to validate state without creating resources.
 
-### Certificate Lifecycle Management
-The `EnsureServingCert` function reconciles a Secret containing the CA and serving certificates. It generates a new CA if missing or invalid, and issues a new leaf certificate signed by the CA if renewal is needed based on expiration or DNS name changes. These certificates are written to `cfg.CertDir` so the manager’s cert watcher can pick them up. A `Renewer` component runs `Setup` periodically to ensure the serving certificate is renewed before expiration, preventing brief periods where the webhook might be untrusted after an operator restart.
-
-### Webhook Configuration
-The `EnsureConfiguration` function creates or updates the `MutatingWebhookConfiguration` named `weft-operator-trust-injector`. It points the API server to the operator’s webhook Service via `ServiceReference` and injects the CA bundle from `EnsureServingCert`. The configuration targets `pods` on `Create` operations and excludes namespaces listed in `cfg.ExcludedNamespaces` using a label selector on `kubernetes.io/metadata.name`. It also respects opt-outs via the `trust.aquaduct.dev/opt-out` label.
+### Certificate and Configuration Management
+The `setup.go` file bootstraps the webhook by managing TLS certificate lifecycles and API registration. `EnsureServingCert` reconciles a Secret containing CA and serving certificates, generating new ones if expired or invalid, and writes them to disk for the manager’s cert watcher. `EnsureConfiguration` creates or updates the `MutatingWebhookConfiguration`, pointing the API server to the operator’s webhook Service and injecting the CA bundle. It targets `pods` on `Create` operations and excludes namespaces via label selectors. A `Renewer` component runs periodically to ensure certificates are renewed before expiration, maintaining stable CA identity across operator restarts.
 
 ## Key Interfaces
-- `Handler.Handle`: Processes admission requests for Pod creation.
-- `Config`: Defines operational parameters including Service namespace/name and excluded namespaces.
-- `EnsureServingCert`: Reconciles TLS certificates and writes them to disk.
+- `Handler.Handle`: Processes admission requests to inject trust bundles.
+- `Config`: Defines operational parameters including service reference and excluded namespaces.
+- `EnsureServingCert`: Reconciles TLS certificates and returns the CA PEM bundle.
 - `EnsureConfiguration`: Creates or updates the MutatingWebhookConfiguration.
 - `Setup`: Runs initial certificate and configuration setup.
-- `Renewer`: Runnable that executes Setup periodically to renew certificates.
+- `Renewer`: A manager.Runnable for periodic certificate renewal.
 
 ## Dependencies
 - Internal PKI and trust packages for certificate management.
-- Kubernetes API types for handling admission reviews.
-- Controller-runtime fake client for testing cluster interactions.
+- Kubernetes API types and controller-runtime utilities.
+- Fake Kubernetes client for testing.
 
 ## Subcomponents
-- `handler.go`: Implements the mutating admission webhook handler.
-- `setup.go`: Bootstraps the webhook and manages TLS certificate lifecycle.
-- `trustinjector_test.go`: Unit tests for handler and setup logic.
-- `BUILD.bazel`: Bazel build targets for the package.
+- `handler.go`: Webhook mutation logic.
+- `setup.go`: Certificate and configuration bootstrap.
+- `trustinjector_test.go`: Unit tests for handler and setup.
+- `BUILD.bazel`: Bazel build targets.

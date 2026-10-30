@@ -1,0 +1,5 @@
+<!-- docdaemon ts:2026-10-30T02:59:44Z hash:a06c15c996a15f10 model:openrouter/qwen/qwen3.7-flash -->
+## TL;DR
+This file defines the end-to-end test scenario for validating WeftServer and WeftTunnel behavior with real traffic.
+
+It orchestrates a sequence of steps (`tunnelsSteps`) that install the operator, create two WeftServers (main on :9092, alt on :9093), and configure a GatewayClass and Gateway. The tests verify that HTTP, TCP, and UDP routes are correctly translated into WeftTunnel resources and corresponding `weft tunnel` Deployments. It asserts traffic flow through these tunnels, including header modification, path prefix routing, and fan-out to multiple servers. The scenario also covers lifecycle management, such as pruning tunnels on route edits, handling connection string changes, and garbage collection when Servers or Gateways are deleted. Finally, it checks for resource leaks by monitoring operator connections during status updates.

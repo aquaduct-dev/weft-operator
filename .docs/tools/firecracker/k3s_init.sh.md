@@ -1,7 +1,0 @@
-<!-- docdaemon ts:2026-10-29T20:36:50Z hash:2217451c5ccf31d5 model:openrouter/qwen/qwen3.7-flash -->
-## TL;DR
-This script initializes a single-node k3s server inside a Firecracker microVM, waits for readiness, applies manifests, and executes the guest test binary.
-
-It mounts necessary kernel filesystems (proc, sysfs, cgroup2) and configures a dummy network interface (`fakenet`) to satisfy kubelet’s requirement for a non-loopback node IP while keeping API access on `127.0.0.1`. It preloads OCI images from `/etc/images` into k3s’ embedded containerd before starting the server with flags optimized for determinism and minimal resource usage (e.g., disabling traefik, metrics-server, and network policies).
-
-The script polls for the `k3s.yaml` kubeconfig and a `Ready` node status within a 240-second deadline. If boot fails, it emits a `K3S_FAILED` marker and a JSON report. On success, it applies YAML manifests from `/etc/manifests`, then runs the test binary specified in `/etc/test_binary` (defaulting to `thirdeyetest`). The test binary writes its results to `/tmp/report.json`, which the script captures between `===REPORT_BEGIN===` and `===REPORT_END===` markers for the host launcher to parse. Finally, it powers off the VM.

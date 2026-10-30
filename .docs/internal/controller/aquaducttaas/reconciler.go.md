@@ -1,11 +1,9 @@
-<!-- docdaemon ts:2026-10-29T20:36:07Z hash:6a28e3c47d558820 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-30T02:59:46Z hash:00577f2a54dc938f model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file implements the `AquaductTaaSReconciler`, which mirrors cloud-hosted bastions from the aquaduct.dev API into Kubernetes as `WeftServer` resources.
+This file implements the `AquaductTaaSReconciler`, which mirrors cloud-hosted bastions from aquaduct.dev into the cluster as WeftServers and manages their lifecycle.
 
-The reconciler polls `api.aquaduct.dev` for external servers and creates or updates corresponding `WeftServer` objects in the cluster, labeling them with `ownerLabel` for lifecycle management. It skips suspended or IP-less bastions to prevent connection failures. On deletion, it enforces a strict cleanup order: cascading deletes of dependent `DNSRecord` objects, suspending all managed bastions via the API, and releasing a finalizer on the access-token secret only when no other `AquaductTaaS` references it.
+The reconciler polls the aquaduct.dev API to synchronize external bastions, creating or updating corresponding `WeftServer` resources in the same namespace. It uses a label (`weft.aquaduct.dev/aquaducttaas`) to track owned servers and prunes any that are no longer returned by the API. The status subresource is updated only when actual state changes or the sync heartbeat becomes stale, preventing unnecessary resource version bumps and watch loops.
 
-Key functions include:
-- `Reconcile`: Orchestrates the sync loop, handling token retrieval, API calls, and status updates.
-- `syncWeftServers`: Mirrors the desired state of bastions, pruning stale `WeftServer` instances.
-- `handleDeletion`: Manages finalizer logic to ensure clean teardown of cloud resources and secrets.
-- `commitStatus`: Optimizes status writes by comparing against previous states to avoid unnecessary resource version bumps and watch loops.
+Deletion handling is strict: it first cascades-delete dependent `DNSRecord` objects (which rely on this TaaS for domain cleanup), then suspends all managed bastions via the API to stop billing, releases the pin on the access-token Secret, and finally removes its own finalizer. A secondary finalizer on the token Secret prevents deletion while any `AquaductTaaS` in the namespace still references it, avoiding wedged cleanup paths.
+
+Key types include `AquaductTaaSReconciler`, which embeds the controller-runtime client and an injected `APIClient`. Constants define labels, annotations, and finalizers used for ownership tracking and safe deletion.

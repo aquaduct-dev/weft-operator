@@ -1,24 +1,29 @@
-<!-- docdaemon ts:2026-10-29T20:38:33Z hash:9fa5f83740b76602 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-30T03:01:06Z hash:6f985f6111275bb9 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This directory implements a generic reconciliation framework for managing resource lifecycles in the Weft Operator.
+The `internal/resource` package provides generic reconciliation logic and image policy utilities for managing Kubernetes resources.
 
 ## Overview
-The `resource` package provides a centralized helper to reduce boilerplate in controller logic by abstracting common CRUD patterns. It allows controllers to inject specific creation, update, and deletion callbacks while handling the decision logic for when those operations should occur. This structure supports the operator's need to ensure resources match their desired state efficiently.
+This directory centralizes common patterns for ensuring resource existence, updates, and deletion through a callback-based framework. It also standardizes container image selection and pull policies to support both online and air-gapped environments. By abstracting these concerns, controllers can focus on domain-specific logic while maintaining consistent lifecycle management.
 
 ## Deep Dive
-### Reconciliation Logic
-The core `Resource` function orchestrates the lifecycle of a managed entity based on its current existence and desired state. It evaluates four distinct scenarios: creating missing resources, updating stale ones, deleting unwanted entities, or performing no-op actions if the state is already correct. Each step logs progress via an injected logger, ensuring traceability during debugging. The function assumes all provided callbacks are non-nil, simplifying error handling within the loop.
+### Reconciliation Framework
+The `Resource` function implements a generic CRUD loop that accepts callbacks for existence checks and mutations. It evaluates whether a resource should exist, is up-to-date, or needs deletion, executing the appropriate action. This reduces boilerplate in controllers by handling the state machine logic, logging, and error propagation uniformly. The framework assumes non-nil callbacks and returns a boolean indicating if any mutation occurred.
 
-### Configuration and Callbacks
-Reconciliation behavior is driven by the `Options` struct, which bundles necessary context and mutators. Callers must provide evaluators like `Exists` and `ShouldExist` to determine status, along with `IsUpToDate` to check for drift. Mutating operations (`Create`, `Update`, `Delete`) return errors on failure, allowing the framework to halt processing immediately. This design decouples the reconciliation strategy from the specific resource implementation, promoting reuse across different controllers.
+### Image Policy Management
+Helpers in this package determine how Kubernetes pods reference container images. `WeftImageOr` provides a fallback default image when none is specified. `PullPolicy` analyzes image references to decide between `Always`, `IfNotPresent`, or other policies. Digests and pinned tags use `IfNotPresent` to optimize for offline scenarios, while floating tags like `:latest` trigger `Always` pulls to ensure freshness. This distinction supports idempotency and reliable updates in air-gapped deployments.
 
 ## Key Interfaces
-- `Resource(opts Options) (changed bool, err error)` - Main reconciliation entry point.
-- `Options` - Struct bundling callbacks, loggers, and state evaluators.
+- `Resource(opts Options) (changed bool, err error)` - Generic reconciliation loop
+- `Options` - Struct bundling callbacks for name, logging, state evaluation, and mutations
+- `WeftImageOr(image string) string` - Returns image or default fallback
+- `PullPolicy(image string) corev1.PullPolicy` - Determines pull strategy based on tag type
 
 ## Dependencies
-- `aquaduct.dev/weft-operator/internal/resource` (self-import path)
+- `aquaduct.dev/weft-operator/internal/resource` (self)
+- `@io_k8s_api//core/v1:core` (Kubernetes API types)
 
 ## Subcomponents
-- `BUILD.bazel` - Bazel build rules for the Go library.
-- `resource.go` - Core reconciliation implementation.
+- `BUILD.bazel` - Bazel build rules
+- `image.go` - Image helper functions
+- `image_test.go` - Unit tests for image logic
+- `resource.go` - Reconciliation framework

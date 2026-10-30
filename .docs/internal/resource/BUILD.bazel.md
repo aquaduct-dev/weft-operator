@@ -1,7 +1,9 @@
-<!-- docdaemon ts:2026-10-29T20:36:41Z hash:c1eb88044fafddba model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-30T02:59:52Z hash:e5c64f29e978e1a6 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file defines the Bazel build rules for the `resource` Go package, exposing both the compiled library and its source files.
+This file defines the Bazel build rules for the `internal/resource` Go package, exposing its library and test targets.
 
-The `go_library` rule compiles `resource.go` into a Go library target named `resource`. It sets the import path to `aquaduct.dev/weft-operator/internal/resource`, ensuring correct module resolution within the project. The target is marked as public, allowing other packages in the repository to depend on it. This structure supports the resource CRUD framework introduced in recent development cycles.
+The `go_library` target compiles `image.go` and `resource.go` into a shared library at import path `aquaduct.dev/weft-operator/internal/resource`. It depends on the Kubernetes API core types via `@io_k8s_api//core/v1:core`, indicating these resources interact with standard Kubernetes objects. The target is marked public to allow other packages in the repository to depend on it.
 
-Additionally, a `filegroup` named `srcs` is defined to expose all `.go` files in the directory via `glob`. This target is also public, facilitating tools or tests that require access to the raw source files rather than just the compiled output.
+A `filegroup` named `srcs` exposes all `.go` files in the directory for tooling or documentation purposes.
+
+The `go_test` target runs `image_test.go` against the main library using the `embed` attribute, ensuring tests have access to the production code without separate compilation steps.

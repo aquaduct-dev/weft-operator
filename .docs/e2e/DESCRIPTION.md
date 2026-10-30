@@ -1,43 +1,44 @@
-<!-- docdaemon ts:2026-10-29T20:39:37Z hash:40509efc061186f0 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-30T03:02:27Z hash:83d292e93f704c0c model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This directory contains the end-to-end test suite for the WeftLocalDNSReflector, validating in-cluster traffic routing and DNS trust establishment within an isolated Firecracker microVM environment.
+This directory provides the infrastructure and test suites for running end-to-end Kubernetes scenarios inside isolated Firecracker microVMs.
 
 ## Overview
-The reflector tests ensure that the operator correctly manages DNS reflection, TLS certificate injection, and service discovery without relying on external networks. By booting a single-node k3s cluster inside a microVM with preloaded images, the suite verifies that traffic to published registries remains strictly within the cluster boundaries. It covers both manual reflector configurations and the automatic creation of a cluster-wide default reflector.
+The `e2e` package enables airgapped, reproducible integration testing for the weft-operator by booting k3s clusters within ephemeral virtual machines. It abstracts away environment setup through shared guest harnesses and preloaded images, allowing specific operator features to be validated against deterministic mock services or real cluster states without external network dependencies.
 
 ## Deep Dive
-### Test Orchestration
-The `main.go` binary acts as the guest-side orchestrator, supporting three modes: running scenario steps, simulating client workloads, or maintaining container liveness. Scenarios are defined in `scenario.go` and `default_scenario.go`, which orchestrate the installation of the operator, deployment of backend services, and validation of DNS resolution. The `allHostnames` mode allows a single reflector to serve all tunnelled registries, simplifying cluster-wide testing.
+### Shared Infrastructure
+The foundation relies on `e2ekit`, a guest-side harness that manages Kubernetes client connections, resource lifecycles, and diagnostic collection within the VM. `images` supplies static container layers and node assets (CA bundles, CRDs) injected at boot, ensuring all tests run against a consistent, offline baseline. The `defs.bzl` macros standardize the creation of these environments via `rules_firecracker`.
 
-### Client Validation
-The `client.go` file implements the workload that validates the reflector’s behavior. It performs DNS lookups to verify resolution against expected IPs and issues HTTPS requests using only the system trust store. This ensures the trust webhook correctly populated the CA bundle. If the push flag is set, it uploads a minimal OCI image to exercise the full push workflow under the reflected identity.
+### Test Scenarios
+Specific subdirectories validate distinct operator capabilities:
+- **install**: Verifies CRD preflight logic, Helm chart lifecycle management, and operator stability during upgrades.
+- **reflector**: Tests DNS reflection, TLS trust injection, and hostname claim conflicts between multiple reflectors.
+- **trust**: Validates the mutating webhook’s ability to inject CA bundles into workloads while respecting namespace isolation.
+- **tunnels**: Exercises HTTP, TCP, and UDP traffic routing through WeftTunnels and Gateway API integration.
+- **aquaduct**: Simulates an external TaaS provider to test DNS record synchronization and token caching.
 
-### Kubernetes Helpers
-`kube.go` provides utilities for managing pod lifecycles and retrieving logs within the test environment. Functions like `waitFor` and `kubectlApply` abstract common operations, ensuring deterministic state checks and safe application of large CRDs. The `runClientPod` function handles the complete lifecycle of test clients, including cleanup and log retrieval upon failure.
-
-### Configuration
-`e2e-values.yaml` configures the Helm chart for an airgapped environment, disabling network pulls and autoscaling features irrelevant to the microVM setup. `00-namespaces.yaml` defines the strict separation of concerns between the operator, backend services, and client workloads.
+Each scenario binary acts as both the test driver and, where necessary, a fake API server, eliminating external service flakiness.
 
 ## Key Interfaces
-- `runScenario`: Orchestrates the test lifecycle and timeout context for scenario execution.
-- `runClient`: Entry point for the client workload, validating DNS and TLS trust.
-- `checkDefaultCreated`: Verifies the existence and readiness of the cluster-default reflector.
-- `waitFor`: Generic polling loop for checking state changes with progress logging.
-- `runClientPod`: Manages the creation, execution, and cleanup of test client pods.
+- `weft_e2e_test`: Bazel macro wrapping `firecracker_k3s_test` with standardized image/file injection.
+- `e2e_binary_image`: Constructs OCI images containing static Go binaries for guest injection.
+- `Kit`: Guest-side struct managing Kubernetes clients and step execution.
+- `Scenario`: Interface defining sequential test steps and lifecycle hooks.
+- `DumpDiagnostics`: Collects pod logs and events upon test failure.
 
 ## Dependencies
-- Kubernetes API types for resource management.
-- Internal cluster harness utilities for VM orchestration.
-- Firecracker microVM runtime for isolated testing.
-- Helm chart templates for operator configuration.
+- `rules_firecracker` (pinned via git_override)
+- Kubernetes API libraries (`client-go`, `controller-runtime`)
+- Helm binary for chart rendering
+- Preloaded container images (k3s, pause, CoreDNS)
 
 ## Subcomponents
-- `00-namespaces.yaml`: Namespace definitions for isolation.
-- `BUILD.bazel`: Bazel build targets for test binaries and images.
-- `client.go`: E2E client workload implementation.
-- `default_scenario.go`: Tests for the automatic cluster-default reflector.
-- `e2e-values.yaml`: Helm values for airgapped testing.
-- `kube.go`: Kubernetes helper utilities.
-- `main.go`: Guest-side orchestrator binary.
-- `no-default-reflector.yaml`: Configuration to disable default reflector.
-- `scenario.go`: Manual reflector test scenario definition.
+- `BUILD.bazel`: Public interface exposing `defs.bzl` macros.
+- `defs.bzl`: Shared Bazel macros for e2e configuration.
+- `aquaduct/`: AquaductTaaS and AutoDNS integration tests.
+- `e2ekit/`: Guest harness and shared utilities.
+- `images/`: Preloaded container images and node assets.
+- `install/`: Operator installation and CRD validation tests.
+- `reflector/`: DNS reflection and trust injection tests.
+- `trust/`: Webhook mutation and CA bundle tests.
+- `tunnels/`: Tunnel routing and Gateway controller tests.

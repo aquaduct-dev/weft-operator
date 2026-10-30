@@ -1,38 +1,35 @@
-<!-- docdaemon ts:2026-10-29T20:39:39Z hash:9eedc04b5304f9af model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-30T03:02:25Z hash:fe10b6c7c18993fa model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This directory provides Bazel integration, test infrastructure, and build tools for Kubernetes controller generation, isolated integration testing, Firecracker microVM orchestration, and Go package discovery.
+This directory provides Bazel integration for the `controller-gen` tool, enabling reproducible generation of Kubernetes manifests and Go code.
 
 ## Overview
-The `tools` directory centralizes the build and testing infrastructure required to develop and validate Kubernetes operators within a Bazel environment. It bridges external dependencies like `controller-gen` and `gopls` with internal build rules, ensuring reproducible code generation and IDE support. Additionally, it supports complex end-to-end testing scenarios by providing isolated environments via `envtest` and full microVM clusters using Firecracker. This setup guarantees that tests run against clean, predictable states without host interference, while also enabling validation of networking features in air-gapped or simulated cluster conditions.
+The `tools/controller-gen` directory bridges the gap between the external `controller-tools` repository and the local Bazel build system. It exposes a public alias for the binary and defines custom rules to handle the specific output requirements of controller-gen, such as deep copy generators, RBAC roles, CRDs, and webhooks. This setup ensures that generated artifacts are managed strictly within Bazel’s dependency graph, avoiding manual file management and ensuring consistent build environments.
 
 ## Deep Dive
-### Code Generation and Language Server Support
-The `controller-gen/` subdirectory wraps the `controller-tools` repository to generate Kubernetes manifests and Go code (CRDs, webhooks, RBAC) within Bazel’s dependency graph. It uses custom rules to map dynamic outputs to static Bazel expectations. The `gopls/` directory provides a shell wrapper for `gopackagesdriver`, allowing language servers to query package information through Bazel’s sandboxed execution context, ensuring consistent dependency resolution across development environments.
+### Rule Implementation
+The `defs.bzl` file introduces `controller_gen_rule`, which wraps the `controller-gen` binary in a controlled execution environment. To guarantee reproducibility, it isolates cache and module data in temporary directories. The rule executes the generator and then maps its flexible output paths to Bazel’s strict `outs` or `dirs` declarations by locating files by name. This abstraction handles the mismatch between controller-gen’s dynamic output structure and Bazel’s static output expectations.
 
-### Isolated Integration Testing
-The `envtest/` module orchestrates isolated test environments by spinning up embedded `etcd` and `kube-apiserver` instances. This ensures that integration tests execute against a clean state, eliminating flakiness caused by shared resources. It includes Gateway API CRDs for validating filter behaviors and status tracking, supporting robust system-level testing without requiring a live cluster.
+### Macro Abstractions
+To reduce boilerplate, the `controller_gen` macro provides specialized sub-rules for common Kubernetes artifacts:
+- **deepcopy**: Generates `zz_generated.deepcopy.go` with a null header.
+- **rbac**: Produces `role.yaml` in the current directory.
+- **crds**: Outputs Custom Resource Definition YAMLs into a dedicated `crds/` directory.
+- **webhook**: Generates webhook configurations when specific outputs are requested.
 
-### MicroVM End-to-End Validation
-The `firecracker/` directory enables end-to-end testing of Kubernetes networking by booting k3s clusters inside Firecracker microVMs. It manages the build of pinned Linux kernels, root filesystems, and VM launch scripts. Test harnesses validate node readiness and multi-node cluster formation over virtual networks, proving features like in-cluster DNS resolution and traffic reflection in realistic, isolated conditions.
+The macro automatically injects necessary arguments for role naming and CRD structure, scanning packages relative to the source list while excluding the generator’s own package. Users can override path discovery via `override_paths` if standard resolution is insufficient.
+
+### External Dependency Management
+The `BUILD.bazel` file creates a public alias named `controller-gen`. This alias re-exports the `//cmd/controller-gen` target from the external `@io_k8s_sigs_controller_tools` dependency. By centralizing this reference, the project allows any internal package to depend on the tool without needing to know the full external path, simplifying consumption and maintenance.
 
 ## Key Interfaces
-- `controller_gen_rule`: Bazel rule executing controller-gen with output mapping.
-- `controller_gen`: Macro simplifying deepcopy, rbac, crds, and webhook generation.
-- `envtest.Environment`: Manages lifecycle of isolated etcd and API server processes.
-- `firecracker_microvm`: Macro defining microVM targets with configurable resources.
-- `firecracker_k3s_test`: Provisioner for single-node k3s cluster validation.
-- `gopackagesdriver.sh`: Entry point for Go package discovery queries.
+- `controller_gen_rule`: A Bazel rule that executes controller-gen and manages output mapping.
+- `controller_gen`: A macro that simplifies usage by providing specialized targets for deepcopy, rbac, crds, and webhook generation.
+- `controller-gen` (alias): A public Bazel alias pointing to the external controller-tools binary.
 
 ## Dependencies
-- `@io_k8s_sigs_controller_tools`: External repository for controller-gen binary.
-- `@rules_go//go/tools/gopackagesdriver`: Core Go binary for package driver protocol.
-- `k8s.io/client-go` and `k8s.io/api`: Kubernetes client and API types.
-- `github.com/onsi/ginkgo/v2` / `github.com/onsi/gomega`: Test assertion frameworks.
-- Firecracker binary and pinned Linux 6.1 kernel source.
-- k3s and Busybox static binaries.
+- `@io_k8s_sigs_controller_tools`: The external repository containing the controller-gen binary.
+- Standard Bazel Go toolchain rules for executing Go binaries.
 
 ## Subcomponents
-- `controller-gen/`: Bazel integration for controller-gen tool.
-- `envtest/`: Infrastructure for isolated integration tests.
-- `firecracker/`: Build and test harnesses for Firecracker microVMs.
-- `gopls/`: Shell wrapper for gopackagesdriver.
+- `BUILD.bazel`: Defines the public alias for the controller-gen tool.
+- `defs.bzl`: Contains the `controller_gen_rule` implementation and `controller_gen` macro.

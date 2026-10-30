@@ -1,45 +1,42 @@
-<!-- docdaemon ts:2026-10-29T20:39:37Z hash:8a01f790f4cf76f4 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-30T03:02:26Z hash:a0b78b2374bd236b model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This directory defines the Kubernetes Custom Resource Definitions (CRDs) and API types for the Weft operator, managing bastion infrastructure, DNS routing, and local traffic reflection.
+This directory defines the v1alpha1 Custom Resource Definitions for the Weft operator, managing infrastructure state and external integrations.
 
 ## Overview
-The `api/v1alpha1` package serves as the contract between the Kubernetes control plane and external aquaduct.dev services. It declares the schema for resources that mirror cloud-hosted bastions, register domain names, and optimize internal cluster traffic by reflecting public hostnames locally. These types enable controllers to reconcile desired states with external APIs while maintaining a canonical source of truth within the cluster.
+The `api/v1alpha1` package establishes the schema for all custom resources managed by the operator. It bridges the Kubernetes cluster with the aquaduct.dev API, handling authentication, bastion mirroring, DNS registration, and local traffic reflection. These types enable controllers to reconcile desired states against external cloud services and internal cluster configurations.
 
 ## Deep Dive
+### AquaductTaaS Integration
+The `AquaductTaaS` resource authenticates with aquaduct.dev using a long-lived token exchanged for a short-lived JWT. It mirrors cloud-hosted bastions as `WeftServer` objects with `Location=External`, providing a unified view of infrastructure for downstream reconcilers. The access token is stored in a Secret reference rather than plaintext to improve security posture.
 
-### Infrastructure Mirroring
-The `AquaductTaaS` resource links a Kubernetes cluster to an aquaduct.dev account. It stores authentication credentials securely via secret references and triggers the mirroring of cloud-hosted bastions into the cluster as `WeftServer` objects with `Location=External`. This ensures downstream components have immediate access to bastion metadata without querying external APIs directly.
+### DNS Management
+`DNSRecord` manages domain registrations via the aquaduct.dev API. It ensures domains are registered, resolves IPs from bastion data, and tracks propagation status through conditions like `Registered` and `Resolved`. The domain name is immutable to allow finalizers to release old names cleanly upon deletion.
 
-### Domain Registration
-`DNSRecord` manages FQDN registrations at the aquaduct.dev provider. It enforces immutability on the domain name to allow finalizers to release old resources cleanly. The reconciler drives status conditions (`Registered`, `Resolved`, `Ready`) by comparing expected IPs derived from bastion data against live DNS lookups, handling propagation delays and conflicts.
+### Local DNS Reflection
+`WeftLocalDNSReflector` keeps public Weft traffic inside the cluster by terminating TLS at an in-cluster proxy. It configures CoreDNS overrides and injects CA certificates into nodes, preventing hairpinning through bastions for bulk operations like image pulls. A default reflector can be enabled to serve all published hostnames automatically.
 
-### Local Traffic Reflection
-`WeftLocalDNSReflector` is a cluster-scoped resource designed to keep public Weft traffic inside the cluster, preventing hairpinning through bastions. It configures CoreDNS overrides and deploys agents to inject CA certificates into nodes. By serving hostnames in-cluster, it optimizes bulk transfers like image pulls against internal registries.
-
-### Tunnel and Gateway Management
-`WeftTunnel` and `WeftGateway` define the connectivity layer. Tunnels specify source/destination URLs and target servers, while gateways provide parameter references for gateway classes. `WeftServer` tracks individual server configurations, including connection strings and Cloudflare tokens, exposing tunnel metrics and health conditions.
+### Tunnel and Gateway Configuration
+`WeftTunnel` and `WeftGateway` define routing rules and tunnel endpoints. `WeftServer` stores connection details and location metadata, while `WeftGateway` references these servers to configure gateway classes. This separation allows flexible routing policies without tightly coupling server definitions to ingress rules.
 
 ## Key Interfaces
-*   `AquaductTaaS`: Primary CRD linking the cluster to aquaduct.dev, managing bastion mirroring.
-*   `DNSRecord`: CRD for registering and resolving domains via the aquaduct.dev API.
-*   `WeftLocalDNSReflector`: Cluster-scoped CRD for keeping public hostnames internal to the cluster.
-*   `WeftServer`: CRD representing individual bastion servers, both internal and external.
-*   `WeftTunnel`: CRD defining specific tunnel connections between sources and destinations.
-*   `WeftGateway`: CRD specifying routing targets for tunnel traffic.
-*   `AddToScheme`: Function to register all v1alpha1 types with the controller-runtime scheme.
+- `AquaductTaaS`: Main CRD for aquaduct.dev integration and bastion mirroring.
+- `DNSRecord`: CRD for managing external domain registrations and resolution.
+- `WeftLocalDNSReflector`: Cluster-scoped CRD for in-cluster DNS proxy configuration.
+- `WeftServer`: CRD representing server instances, both internal and external.
+- `WeftTunnel`: CRD defining tunnel source/destination URLs and targets.
+- `WeftGateway`: CRD specifying target servers for tunnel routing.
+- `AddToScheme`: Function to register all types with the controller-runtime scheme.
 
 ## Dependencies
-*   `k8s.io/api/core/v1`: For Secret references and standard Kubernetes primitives.
-*   `k8s.io/apimachinery/pkg/apis/meta/v1`: For standard metadata and condition structures.
-*   `k8s.io/apimachinery/pkg/runtime`: For serialization and scheme management.
-*   `sigs.k8s.io/controller-runtime/pkg/scheme`: For building the API group version scheme.
+- Kubernetes client-go libraries (`core/v1`, `meta/v1`, `runtime`)
+- Controller-runtime scheme package
+- Controller-gen tooling for CRD manifest generation
 
 ## Subcomponents
-*   `BUILD.bazel`: Bazel build rules for code generation and library compilation.
-*   `aquaducttaas_types.go`: Types for AquaductTaaS and BastionInfo.
-*   `dnsrecord_types.go`: Types for DNSRecord and its status conditions.
-*   `groupversion_info.go`: API group registration and scheme builder initialization.
-*   `weftgateway_types.go`: Types for WeftGateway and TargetServers.
-*   `weftlocaldnsreflector_types.go`: Types for WeftLocalDNSReflector and ReflectedRoute.
-*   `weftserver_types.go`: Types for WeftServer and TunnelStatus.
-*   `wefttunnel_types.go`: Types for WeftTunnel and WeftTunnelList.
+- `aquaducttaas_types.go`: AquaductTaaS resource definitions.
+- `dnsrecord_types.go`: DNSRecord resource definitions.
+- `weftgateway_types.go`: WeftGateway resource definitions.
+- `weftlocaldnsreflector_types.go`: WeftLocalDNSReflector resource definitions.
+- `weftserver_types.go`: WeftServer resource definitions.
+- `wefttunnel_types.go`: WeftTunnel resource definitions.
+- `groupversion_info.go`: API group and version registration.

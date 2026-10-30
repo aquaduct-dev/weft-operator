@@ -1,11 +1,9 @@
-<!-- docdaemon ts:2026-10-29T20:35:40Z hash:b13299d7dad4ae7e model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-30T02:59:21Z hash:b28dad26a11f5507 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file defines the Bazel module configuration, external dependencies, and pinned artifacts for the `weft_operator` project.
+This file defines the Bazel module configuration, declaring dependencies and pinned external resources for building and testing the Weft Operator.
 
-It registers core toolchains (`rules_go`, `gazelle`) and container rules (`rules_oci`, `rules_helm`). Go SDK 1.25.0 is downloaded explicitly, and Go module dependencies are resolved via Gazelle extensions, with explicit repo registrations for Kubernetes ecosystem libraries (e.g., `controller-runtime`, `client-go`).
+It establishes `weft_operator` as a Bazel module, importing core tooling via `bazel_dep`: `rules_oci` for container management, `rules_go` and `gazelle` for Go build rules, `rules_helm` for Helm chart integration, and `rules_shell` for shell utilities. The Go SDK is explicitly downloaded (v1.25.0) rather than using the system default, ensuring reproducible builds across environments.
 
-The module also manages e2e test infrastructure by pinning specific versions of tools and images to ensure airgapped, reproducible microVM testing:
-- **Firecracker VMs**: Uses a pre-built Linux kernel source, static Busybox, and k3s binary.
-- **Cluster Components**: Pins CoreDNS and Registry images used by the reflector tests.
-- **Dependencies**: Includes Gateway API CRDs and Mozilla CA bundle for trust store simulation.
-- **Local Dev**: Overrides the `aquaduct_weft` dependency to point to a specific git commit, allowing local development against the exact operator version being tested.
+Direct Go dependencies are resolved from `//:go.mod` and registered via `use_repo`, including Kubernetes client libraries (`k8s/client-go`, `controller-runtime`) and utility packages like `spf13/cobra`. This ensures all transitive Go dependencies are available to the build graph without requiring a `WORKSPACE` file.
+
+For e2e testing, the module configures an airgapped environment using `rules_firecracker`. It pins specific versions of `aquaduct_weft` and `rules_firecracker` via `git_override` to ensure tests run against exact code states. External artifacts required by the test VMs—such as k3s, CoreDNS, local-path provisioner, VPA components, and Mozilla CA bundles—are pre-downloaded using `http_file` and `oci.pull` with strict SHA256 checksums. This prevents network dependency during test execution and guarantees deterministic behavior. Gateway API CRDs are also fetched to satisfy operator startup requirements.

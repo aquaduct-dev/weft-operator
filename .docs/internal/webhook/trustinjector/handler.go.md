@@ -1,11 +1,13 @@
-<!-- docdaemon ts:2026-10-29T20:36:46Z hash:db94cca48c68d46b model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-30T02:59:59Z hash:c8fb7167eb100e60 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file implements the mutating admission webhook handler that injects WeftLocalDNSReflector CA certificates into new pods to enable in-cluster DNS resolution.
+This file implements the mutating admission webhook handler that injects WeftLocalDNSReflector CA trust bundles into new pods.
 
-The `Handler` struct processes admission requests for Pod creation. It decodes the incoming pod spec and checks for opt-out annotations via `trust.OptedOut`. If not opted out, it builds the current trust bundle using `trust.Source.Build`.
+The `Handler` struct processes admission requests to ensure pods trust the local DNS reflector's certificates. It decodes incoming pod specs and checks for opt-out annotations or labels. If injection is required, it builds the current trust bundle and ensures a corresponding ConfigMap exists in the target namespace.
 
-If the bundle is empty, the request is allowed unmodified. Otherwise, the handler ensures the namespace-specific ConfigMap containing the trust bundle exists by calling `CreateConfigMapIfMissing`, skipping this step during dry-run requests to avoid side effects.
+Key behaviors include:
+- **Failure Policy**: The webhook is registered with `failurePolicy: Ignore`. If the operator is unavailable or errors occur (e.g., missing bundle, decode failure), the pod is admitted unmodified. This prevents cluster-wide outages if the injector fails.
+- **ConfigMap Management**: For non-dry-run requests, it creates the trust bundle ConfigMap if it doesn't exist. It explicitly rejects injection if a foreign ConfigMap already occupies the expected name (`trust.ConfigMapName`) to avoid conflicts, admitting the pod without trust instead.
+- **Dry Run Support**: During dry runs, it validates the ConfigMap state without creating resources, ensuring side-effect-free validation.
+- **Injection Logic**: It modifies the pod spec to mount the trust bundle volume and configure container environments, returning a JSON patch to the API server.
 
-The handler then attempts to inject the CA bundle into the pod's volumes and environment variables using `trust.InjectPod`. If injection occurs, the modified pod is marshaled and returned as a JSON patch response. Any errors during decoding, bundle building, or publishing result in an "Allowed" response with an unmodified pod, ensuring the webhook failure policy of `Ignore` prevents blocking pod creation.
-
-The `podName` helper extracts the pod name from the request, handling both named and generate-name cases.
+The handler relies on `trust.Source` for bundle construction and `admission.Decoder` for request parsing. It fits alongside `setup.go`, which manages the webhook serving certificate and `MutatingWebhookConfiguration`.

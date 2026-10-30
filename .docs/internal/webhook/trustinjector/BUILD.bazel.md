@@ -1,9 +1,7 @@
-<!-- docdaemon ts:2026-10-29T20:36:45Z hash:7001b3aaa1d0aced model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-30T03:00:00Z hash:c9488818e308824c model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file defines the Bazel build targets for the trust injector webhook, which manages PKI certificates and handles admission requests.
+This file defines the Bazel build targets for the trust injection webhook package, including the main library and its associated tests.
 
-The `go_library` target compiles `handler.go` and `setup.go`, exposing the core logic for injecting trust into pods. It depends on internal PKI and trust packages to manage certificate lifecycles, alongside Kubernetes API types for handling admission reviews.
+The `trustinjector` `go_library` compiles `handler.go` and `setup.go`, exposing the logic for mutating admission requests to inject trust bundles into pods. It depends on internal PKI and trust packages for certificate management, alongside Kubernetes API types and controller-runtime utilities for webhook registration and client interactions.
 
-The `go_test` target provides unit tests for the injector, embedding the library and utilizing a fake client from `controller-runtime` to simulate cluster interactions without a live environment.
-
-A recent architectural change introduced `WeftLocalDNSReflector` support to optimize intra-cluster traffic. This refactor ensures that public hostnames are resolved locally via WireGuard tunnels rather than hairpinning through bastion hosts, reducing latency for bulk operations like image registry pulls.
+The `trustinjector_test` `go_test` target embeds the library to run unit tests against the webhook logic. It utilizes a fake Kubernetes client to simulate cluster state, ensuring that mutations are applied correctly based on annotations and namespace labels. Recent changes indicate this setup supports e2e testing for k3s environments, verifying that the webhook respects opt-out mechanisms and correctly handles CA bundle mounting in init and app containers without interfering with existing volume mounts.

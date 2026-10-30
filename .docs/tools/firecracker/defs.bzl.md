@@ -1,7 +1,0 @@
-<!-- docdaemon ts:2026-10-29T20:36:47Z hash:fa8a18e6322946a4 model:openrouter/qwen/qwen3.7-flash -->
-## TL;DR
-This file defines Bazel macros for building Firecracker microVM disk images, kernels, and integration tests.
-
-It provides `firecracker_initramfs` and `firecracker_rootfs` to generate boot assets (cpio.gz and ext4 images) using host tools like `mkinitramfs` and `mkfs.ext4`. The core `firecracker_microvm` macro generates a shell script that launches the VM via the host's `firecracker` binary, supporting both initramfs and rootfs boots with configurable vCPUs and memory.
-
-For testing, `firecracker_test` wraps a microVM in an `sh_test`, asserting expected serial console markers within a timeout. `firecracker_container` simplifies booting OCI images by generating a rootfs with a custom `/sbin/init` that handles environment variables and entrypoints. `firecracker_k3s_test` provisions a single-node k3s cluster inside a microVM, running guest-side test binaries against it. Finally, `firecracker_cluster_test`, `firecracker_renumber_test`, and `firecracker_install_cluster_test` manage multi-VM scenarios on shared bridges for complex networking and installation validation, requiring unsandboxed execution for TAP/bridge setup.

@@ -1,40 +1,45 @@
-<!-- docdaemon ts:2026-10-29T20:39:53Z hash:8ba988b1fb606acb model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-30T03:03:18Z hash:b667e0bb959539d8 model:openrouter/qwen/qwen3.7-flash -->
+# Weft Operator
+
 ## TL;DR
-This directory serves as the root configuration and entry point for the Weft Operator, defining build rules, CI pipelines, and deployment manifests.
+The Weft Operator is a Kubernetes controller that automates exposing internal services to the internet via WireGuard tunnels, managing bastion nodes, traffic routing, and in-cluster DNS reflection.
 
 ## Overview
-The repository root orchestrates the project’s lifecycle by integrating Bazel-based builds with GitHub Actions for continuous integration and release. It establishes the canonical source of truth for Kubernetes Custom Resource Definitions (CRDs) and provides Helm charts for production deployment. The structure ensures that code generation, testing, and packaging are reproducible across environments while maintaining strict security boundaries for secrets and credentials.
+This repository contains the source code for the Weft Operator, which bridges external cloud infrastructure with Kubernetes cluster resources. It manages `WeftServer`, `WeftTunnel`, and `WeftGateway` custom resources to establish secure connectivity while optimizing intra-cluster traffic through local DNS reflection. The project uses Bazel for reproducible builds and Firecracker microVMs for airgapped end-to-end testing.
 
 ## Deep Dive
-### Build and Module Configuration
-`MODULE.bazel` and `BUILD.bazel` define the workspace structure, pinning Go SDK 1.25.0 and external dependencies like `controller-runtime`. Gazelle is configured to auto-generate build rules, ensuring consistency between source files and Bazel targets. `tools.go` acts as a dependency sink for build-time tools like `controller-gen`, preventing runtime bloat.
+### Core Functionality
+The operator reconciles desired states for tunneling and gateway configurations. It mirrors external bastions from the Aquaduct TaaS API, handles JWT authentication, and translates Gateway API routes into specific tunnel deployments. A mutating admission webhook injects CA certificates into pods to ensure trust without image modifications.
 
-### CI/CD Pipelines
-The `.github/` directory contains workflows for testing and releasing. `test.yml` validates code integrity using Bazel, caching output bases for performance. `release.yml` triggers on main branch merges, building multi-architecture binaries and publishing container images to GHCR alongside Helm charts.
+### Testing Infrastructure
+End-to-end tests run inside isolated k3s clusters within Firecracker VMs. This setup validates CRD preflight logic, chart lifecycle management, and traffic routing without external network dependencies. Shared harnesses manage resource lifecycles and diagnostic collection, ensuring deterministic test outcomes.
 
-### Deployment and Security
-The `chart/` directory packages the operator into a Helm chart, managing RBAC, webhooks, and Vertical Pod Autoscaler (VPA) integration. Security is enforced via read-only filesystems and dynamic TLS certificate generation for admission webhooks. Secrets are never stored in CRDs; instead, resources reference Kubernetes Secrets for authentication tokens and connection strings.
+### Build System
+Bazel is the primary build system, managed via `MODULE.bazel` and Gazelle-generated rules. The configuration enforces strict dependency pinning and excludes KVM-dependent tests from standard CI runs. Pre-commit hooks automate Gazelle synchronization and unit test execution to maintain build integrity.
 
 ## Key Interfaces
-- `AddToScheme`: Registers all v1alpha1 API types with the controller-runtime scheme.
-- `main()`: Entry point for the operator binary and node agent.
-- `setup-pre-commit-hook.sh`: Automates local development validation.
-- `WeftServerReconciler`: Provisions and monitors bastion server resources.
-- `WeftLocalDNSReflector`: Manages in-cluster DNS reflection and trust injection.
+- `AquaductTaaSReconciler`: Syncs bastions and domains via the aquaduct.dev API.
+- `WeftGatewayReconciler`: Translates Gateway API routes into WeftTunnels.
+- `WeftLocalDNSReflector`: Resolves public hostnames inside the cluster.
+- `Agent`: Core loop controller for node-level DNS and TLS configuration.
+- `NewCA`: Generates a fresh self-signed ECDSA P-256 CA certificate.
+- `InjectPod`: Mutates a pod spec to mount the trust bundle volume.
+- `Handler.Handle`: Processes admission requests to inject trust bundles.
+- `Runner`: Interface for executing test scenarios and returning results.
 
 ## Dependencies
-- Bazelisk v1.25.0
-- Java 17 (Temurin)
-- Go 1.25.0
-- Kubernetes client-go and controller-runtime
-- GitHub Container Registry (GHCR)
+- `controller-runtime`: Kubernetes controller framework.
+- `client-go`: Standard Kubernetes client libraries.
+- `gateway-api`: Kubernetes Gateway API types.
+- `rules_firecracker`: Pinned via git_override for e2e testing.
+- Helm binary for chart rendering.
 
 ## Subcomponents
-- `.github/`: CI/CD workflows.
-- `api/`: CRD type definitions.
-- `chart/`: Helm chart templates.
-- `cmd/`: Application entry point and build rules.
-- `e2e/`: End-to-end test suite.
-- `internal/`: Core controllers and utilities.
-- `scripts/`: Development automation scripts.
-- `tools/`: Build and test infrastructure.
+- `.github/`: GitHub Actions workflows for CI and release.
+- `api/`: v1alpha1 Custom Resource Definitions.
+- `chart/`: Helm chart for deployment and VPA integration.
+- `cmd/`: Entry point, build configuration, and tests.
+- `e2e/`: End-to-end test suites and Firecracker infrastructure.
+- `internal/`: Core operator logic, controllers, and utilities.
+- `scripts/`: Automation scripts for development tools.
+- `tools/`: Bazel integration for controller-gen.

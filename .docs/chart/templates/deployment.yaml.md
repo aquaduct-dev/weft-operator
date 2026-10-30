@@ -1,7 +1,5 @@
-<!-- docdaemon ts:2026-10-29T20:35:48Z hash:494e3de617177844 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-30T02:59:53Z hash:5c5aa0ee943adc9b model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This Helm template defines the Kubernetes Deployment for the `weft-operator` control plane pod.
+This file defines the Kubernetes Deployment manifest for the weft-operator, configuring its container environment, probes, and security context.
 
-The deployment configures a single replica set (scaled via `.Values.replicaCount`) running the operator container. It injects critical environment variables to configure internal behavior: `WEFT_OPERATOR_IMAGE` and `WEFT_IMAGE` point to container registries, while `DEFAULT_REFLECTOR_*` settings enable the cluster-wide DNS reflector feature introduced in recent updates. The operator exposes health probes on port 8081 (`/healthz`, `/readyz`) and a webhook listener on port 9443.
-
-Security is handled by mounting an `emptyDir` volume at `/tmp/k8s-webhook-server/serving-certs` for temporary certificate storage, ensuring the root filesystem remains read-only. The pod respects standard scheduling constraints like `nodeSelector`, `affinity`, and `tolerations`. Service account and image pull secrets are applied as defined in values.
+The template renders a standard Deployment using `weft-operator.fullname` and labels. It configures the operator container with specific CLI args for health (`:8081`) and metrics (`127.0.0.1:8080`), enabling leader election. Environment variables inject the operator image URL, the Weft application image, and settings for the default cluster-scoped `WeftLocalDNSReflector`. The webhook service name is derived from the release fullname. A writable `emptyDir` volume mounts at `/tmp/k8s-webhook-server/serving-certs` to store TLS certificates, addressing the read-only root filesystem constraint. Liveness and readiness probes target `/healthz` and `/readyz` on port 8081. Standard scheduling constraints (nodeSelector, affinity, tolerations) are applied via values.

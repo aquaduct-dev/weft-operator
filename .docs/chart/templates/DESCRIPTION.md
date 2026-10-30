@@ -1,47 +1,44 @@
-<!-- docdaemon ts:2026-10-29T20:38:37Z hash:ebb94054aaeb9520 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-30T03:01:08Z hash:daaf9e21daaf9c09 model:openrouter/qwen/qwen3.7-flash -->
 # DESCRIPTION.md
 
 ## TL;DR
-This directory contains the Helm chart templates that define the Kubernetes resources for the Weft operator, its dependencies, and optional components.
+This directory contains the Helm chart templates for deploying the Weft operator, its VPA sidecars, and associated Kubernetes resources.
 
 ## Overview
-The templates in this directory render the complete control plane for the Weft operator, including the main Deployment, ServiceAccount, RBAC bindings, and webhook services. It also conditionally installs the Vertical Pod Autoscaler (VPA) stack to manage operator memory scaling and defines GatewayClass resources for network traffic management. The structure ensures that generated artifacts like RBAC roles are kept separate from static templates while maintaining a unified build interface via Bazel.
+The templates define the core operator deployment, RBAC policies, and webhook infrastructure required for cluster management. It also conditionally installs a Vertical Pod Autoscaler (VPA) stack to manage memory scaling, addressing historical OOM issues caused by large watch sets. Gateway API integration is handled via a dedicated `GatewayClass` resource.
 
 ## Deep Dive
-### Core Operator Resources
-`deployment.yaml` defines the primary `weft-operator` pod, injecting environment variables for image registries and enabling the cluster-wide DNS reflector feature. Security is enforced through read-only root filesystems and temporary certificate storage in an `emptyDir`. The `serviceaccount.yaml` and `rolebinding.yaml` files establish the necessary permissions, linking the operator's service account to the `manager-role` ClusterRole.
+### Operator Core
+The `deployment.yaml` configures the main controller with health probes, leader election, and TLS certificate storage in an `emptyDir`. The `serviceaccount.yaml` and `rolebinding.yaml` establish the necessary permissions for cluster-wide resource management. A `webhook-service.yaml` exposes the trust injection endpoint securely within the cluster.
 
-### Webhook and TLS Management
-The `webhook-service.yaml` exposes the trust injection endpoint via a ClusterIP service, ensuring secure internal communication. TLS certificates for admission webhooks are managed in `vpa-certs.yaml`, which uses Helm functions to generate self-signed CA and server certificates dynamically, preventing rotation issues during upgrades.
+### VPA Stack
+To prevent OOM kills during large-scale reconciliation, the chart bundles the VPA controller components (`vpa-controllers.yaml`, `vpa-crd.yaml`, `vpa-rbac.yaml`). These are installed only when `installVpaController` is true, ensuring multi-operator safety. The `vpa.yaml` resource applies memory-only autoscaling with `updateMode: Off`, providing advisory recommendations while respecting single-replica constraints. TLS certificates for the VPA admission webhook are generated in-chart using `genCA` and `genSignedCert` in `vpa-certs.yaml`.
 
-### Vertical Pod Autoscaler Integration
-To prevent OOM kills caused by large cluster watch sets, the chart bundles the VPA controller stack (`vpa-controllers.yaml`, `vpa-crd.yaml`, `vpa-rbac.yaml`). This includes vendored CRDs and deployments for the recommender, updater, and admission controller. The `vpa.yaml` template configures a memory-only VPA for the operator itself, running in `Off` mode to provide advisory recommendations without enforcing evictions on single-replica workloads.
-
-### Gateway and Reflector Configuration
-`gatewayclass.yaml` creates the `GatewayClass` resource required for the Weft Gateway controller, optionally referencing configuration parameters. Recent updates introduced support for `WeftLocalDNSReflector`, allowing the operator to keep public hostnames resolvable within the cluster, reducing hairpinning latency for bulk transfers.
+### Gateway Integration
+The `gatewayclass.yaml` defines the `GatewayClass` linked to the Weft gateway controller, allowing automatic Gateway reconciliation. It supports optional parameter references to `WeftGateway` custom resources.
 
 ## Key Interfaces
-- `weft-operator.labels`: Helper for consistent metadata labeling across all resources.
-- `weft-operator.fullname`: Helper for generating unique resource names based on the release.
-- `installVpaController`: Conditional helper determining whether VPA resources should be rendered.
-- `.Values.gatewayClass.create`: Boolean flag controlling GatewayClass instantiation.
-- `.Values.verticalPodAutoscaler.*`: Configuration block for VPA settings and overrides.
+- `weft-operator.fullname`: Helper for consistent resource naming.
+- `weft-operator.labels`: Helper for standard metadata labels.
+- `weft-operator.serviceAccountName`: Helper for ServiceAccount identification.
+- `installVpaController`: Conditional helper for VPA component installation.
 
 ## Dependencies
-- Helm standard library functions (`genCA`, `genSignedCert`, `lookup`).
-- Bazel build system for packaging YAML assets.
-- Kubernetes API groups: `rbac.authorization.k8s.io`, `autoscaling.k8s.io`, `networking.k8s.io`.
+- Helm built-in functions (`genCA`, `genSignedCert`, `lookup`).
+- Kubernetes RBAC API group.
+- Kubernetes Autoscaling API group (for VPA).
+- Gateway API group (for GatewayClass).
 
 ## Subcomponents
-- `BUILD.bazel`: Bazel targets for packaging chart templates.
-- `_helpers.tpl`: Shared Helm template helpers.
-- `deployment.yaml`: Main operator deployment manifest.
+- `_helpers.tpl`: Template helper functions.
+- `BUILD.bazel`: Bazel build targets for packaging.
+- `deployment.yaml`: Main operator Deployment manifest.
 - `gatewayclass.yaml`: GatewayClass resource definition.
 - `rolebinding.yaml`: ClusterRoleBinding for operator permissions.
 - `serviceaccount.yaml`: Operator ServiceAccount definition.
-- `vpa-certs.yaml`: TLS secret generation for webhooks.
-- `vpa-controllers.yaml`: VPA component deployments and services.
+- `vpa-certs.yaml`: TLS secret generation for VPA webhooks.
+- `vpa-controllers.yaml`: VPA recommender, updater, and admission controller deployments.
 - `vpa-crd.yaml`: VPA CustomResourceDefinitions.
 - `vpa-rbac.yaml`: RBAC resources for VPA components.
-- `vpa.yaml`: Operator-specific VerticalPodAutoscaler resource.
-- `webhook-service.yaml`: Webhook exposure service.
+- `vpa.yaml`: VerticalPodAutoscaler resource for the operator.
+- `webhook-service.yaml`: Service exposing the trust injection webhook.

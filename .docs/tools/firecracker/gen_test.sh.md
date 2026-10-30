@@ -1,5 +1,0 @@
-<!-- docdaemon ts:2026-10-29T20:36:47Z hash:e8e42c18174e786a model:openrouter/qwen/qwen3.7-flash -->
-## TL;DR
-This script generates a self-contained shell test that boots a Firecracker microVM, monitors its serial output for expected markers, and asserts pass/fail conditions.
-
-It accepts arguments to define the runner path, timeout, and expected/unexpected log strings. The generated script locates the runner via Bazel runfiles, launches it in a new session, and streams logs to stderr. It implements an early-exit optimization: once all `--expect` markers are found, it terminates the VM immediately rather than waiting for the full timeout. A hard deadline serves as a safety net if markers never appear. After the VM exits, the script verifies that all expected markers were present and no unexpected markers were found, exiting with status 1 on any failure.

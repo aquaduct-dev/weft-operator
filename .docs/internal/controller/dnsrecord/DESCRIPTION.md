@@ -1,34 +1,34 @@
-<!-- docdaemon ts:2026-10-29T20:37:08Z hash:304b6351eb3f88ba model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-30T03:00:10Z hash:b2a7c279c99dd198 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-The `dnsrecord` controller reconciles Kubernetes Custom Resources with the AquaductTaaS API to manage domain registrations and DNS resolution.
+This directory implements the `DNSRecord` controller, managing domain registrations and DNS resolution for the aquaduct.dev platform.
 
 ## Overview
-This directory implements the `DNSRecord` controller, which ensures that specified domains at `aquaduct.dev` are registered, owned, and correctly resolved to bastion host IPs. It coordinates with the `aquaducttaas` controller to fetch credentials and bastion lists, driving the external state toward the desired configuration defined in the CRD. The system handles lifecycle events including initial registration, ownership assertion via PATCH, and cleanup on deletion.
+The `DNSRecord` reconciler drives Kubernetes custom resources toward a desired state by coordinating with the `AquaductTaaS` controller for bastion data and credentials. It handles the full lifecycle of domain ownership, including registration, ownership assertion via PATCH, and cleanup via finalizers. The controller ensures that DNS records accurately reflect the current set of active bastions while preventing infinite reconcile loops through careful status comparison.
 
 ## Deep Dive
 ### Reconciliation Logic
-The `DNSRecordReconciler` drives domains to a desired state by resolving dependencies and computing expected IP sets from bastion nodes. It uses PUT for new domains and PATCH for updates, asserting ownership through minimal requests authenticated by JWT. To prevent infinite reconcile loops caused by status updates triggering watches, the controller compares sorted outputs (`ResolvedIPs`, `selectBastions`) against previous states, writing `.status` only when semantic changes occur or the heartbeat is stale.
+The reconciler follows a strict stage sequence: handling deletion, resolving dependencies, computing expected IPs, and interacting with the external API. It uses `selectBastions` to map target bastion IDs to IPs deterministically. A critical optimization compares sorted IP lists against previous states to avoid unnecessary `.status` updates, which previously caused infinite watch loops across the fleet.
 
-### Ownership and Error Handling
-The controller gracefully handles pre-existing domains. If a GET returns 200, it issues a PATCH to assert ownership; failures result in `ErrDomainForeign`, marking records as externally managed if DNS matches expectations. Bastion selection filters suspended nodes and validates target IDs, ensuring deterministic IP sets. The `unregister-on-delete` finalizer ensures cleanup calls `DeleteDomain` before removal.
+### Domain Management
+Registration uses PUT/PATCH to assert ownership. If a domain is foreign-owned, the controller checks if DNS is already correct before failing. Deletion ensures the domain is unregistered on aquaduct.dev before removing the finalizer, retrying on transient failures. The `commitStatus` helper prevents stamping `LastSyncTime` on every pass, ensuring idempotent resyncs.
 
-### Status Conditions
-Health is tracked via three conditions: **Registered** (claim/update success), **Resolved** (DNS A-records match expected IPs), and **Ready** (end-to-end correctness). These provide clear signals for fleet-wide monitoring without over-triggering watch loops.
+### Bastion Propagation
+The reconciler always sends `bastion_ids` in PUT/PATCH requests to ensure new bastions propagate correctly, as PATCH preserves existing associations unless explicitly overridden. This fixes issues where later bastion additions were ignored after initial registration.
 
 ## Key Interfaces
-*   `DNSRecordReconciler`: Main controller struct implementing the reconciliation loop.
+*   `DNSRecordReconciler`: The main reconciler struct implementing the control loop.
 *   `mockDomainClient`: Test helper implementing the external API interface.
-*   `envtest.Environment`: Setup for local Kubernetes control plane simulation.
+*   `createTaaS`: Helper function to set up necessary Kubernetes resources for tests.
+*   `seedTaaSBastions`: Helper function to populate bastion topology for tests.
 
 ## Dependencies
-*   `controller-runtime`: Kubernetes operator framework for watch loops and client management.
-*   `v1alpha1`: API types defining the `DNSRecord` Custom Resource Definition.
-*   `aquaducttaas`: Controller providing credentials and bastion list data.
-*   `Ginkgo/Gomega`: Testing framework for integration tests.
-*   `envtest`: Tool for simulating a cluster environment with etcd and API server.
+*   `controller-runtime`: For Kubernetes watch loops and client management.
+*   `v1alpha1` API types: Defines the `DNSRecord` resource schema.
+*   `aquaducttaas` controller: Provides bastion IP data and credentials.
+*   `envtest`: Used in tests to simulate a local cluster environment.
 
 ## Subcomponents
-*   `BUILD.bazel`: Bazel build targets for library and tests.
-*   `reconciler.go`: Core controller logic and status management.
-*   `reconciler_test.go`: Integration tests for lifecycle and error scenarios.
-*   `suite_test.go`: Test environment setup and teardown.
+*   `BUILD.bazel`: Bazel build definitions for library and tests.
+*   `reconciler.go`: Core reconciliation logic and status management.
+*   `reconciler_test.go`: Integration tests for domain lifecycle and error handling.
+*   `suite_test.go`: Ginkgo test suite setup and teardown.

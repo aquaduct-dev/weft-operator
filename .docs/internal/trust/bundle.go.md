@@ -1,20 +1,22 @@
-<!-- docdaemon ts:2026-10-29T20:36:46Z hash:da0a32ca76ac0df1 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-30T02:59:59Z hash:8047364b27eae34d model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file assembles a combined trust bundle of system and reflector CAs, manages the corresponding ConfigMap, and provides fingerprint data for pod injection.
+This file assembles a combined trust bundle of system and reflector CAs, manages the corresponding ConfigMap, and validates namespace integrity.
 
 ### Purpose
-The `trust` package ensures workloads trust WeftLocalDNSReflector CAs without workload changes. It builds a shared bundle (system roots + reflector CAs) and publishes it as the `weft-trust-bundle` ConfigMap. The webhook (`inject.go`) mounts this ConfigMap into pods at creation time.
+The `trust` package ensures workloads trust WeftLocalDNSReflector CAs without workload changes. It builds a shared bundle (system roots + reflector CAs) and publishes it as a ConfigMap (`weft-trust-bundle`). The `inject.go` module mounts this ConfigMap into pods via a webhook.
 
 ### Key Types & Functions
 
-*   **`Build`**: Assembles the `Bundle` by concatenating system roots with sorted reflector CAs. It enforces a minimum certificate count (`minSystemRoots`) to prevent publishing a broken bundle if system roots are missing or truncated.
-*   **`Source`**: Aggregates CA data from the cluster.
-    *   `CAs`: Lists active reflectors and retrieves their CA Secrets (`<name>-ca`). Skips reflectors marked for deletion or with invalid/missing secrets.
-    *   `Build`: Combines `CAs` with the local system root file to produce a complete `Bundle`.
-*   **`EnsureConfigMap`**: Creates or updates the trust bundle ConfigMap in a namespace. It sets ownership references to the reflectors carrying the CAs, enabling garbage collection when they are removed.
-*   **`CreateConfigMapIfMissing`**: A safety check used by the reconciler/webhook to create the ConfigMap only if it doesn't exist, preventing race conditions over content or ownership.
-*   **`OwnerRefs`**: Generates Kubernetes owner references for reflectors whose CAs are present in the bundle, ensuring proper lifecycle management.
+*   **`Bundle`**: Holds the combined CA data (`All`), reflector-only CAs (`CAs`), and sorted fingerprints. `Empty()` checks if no reflectors are present.
+*   **`Build`**: Assembles the bundle. It validates that system roots contain at least 20 certificates to prevent breaking TLS connections due to truncated or missing system bundles.
+*   **`Source`**: Aggregates CA data from cluster reflectors and reads system roots from disk.
+    *   `CAs`: Lists active reflectors and retrieves their CA Secrets. Skips reflectors being deleted or with missing/invalid secrets.
+    *   `Build`: Combines live cluster CAs with local system roots.
+*   **ConfigMap Management**:
+    *   `EnsureConfigMap`: Creates or updates the trust bundle ConfigMap, marking it with managed labels for garbage collection.
+    *   `CheckConfigMap`: Verifies that no unmanaged ConfigMap with the same name exists in the namespace, preventing accidental overwrites of external trust stores.
+    *   `CreateConfigMapIfMissing`: Atomically creates the ConfigMap only if it doesn't exist, handling race conditions with the reconciler.
+*   **`OwnerRefs`**: Generates owner references for the ConfigMap based on active reflectors, ensuring cleanup when reflectors are removed.
 
-### Configuration
-*   **`DefaultSystemRootsFile`**: Path to the system CA bundle in the operator image (`/etc/ssl/certs/ca-certificates.crt`).
-*   **`ManagedLabel`**: Labels applied to the ConfigMap to allow filtering by the informer.
+### Integration
+The reconciler uses `Source.Build` and `EnsureConfigMap` to maintain the bundle state. The webhook uses `CheckConfigMap` and `CreateConfigMapIfMissing` to ensure safe injection. Labels (`app.kubernetes.io/name=weft-local-dns-reflector`) allow the operator to filter and manage these ConfigMaps exclusively.

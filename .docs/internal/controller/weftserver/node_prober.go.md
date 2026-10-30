@@ -1,25 +1,20 @@
-<!-- docdaemon ts:2026-10-29T20:36:07Z hash:1ee5b6f526c0ad2c model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-30T02:59:54Z hash:d59cccffd6fb0589 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file implements a background prober that periodically discovers Kubernetes nodes, validates their connectivity via ephemeral jobs, and automatically provisions `WeftServer` custom resources for eligible nodes.
+This file implements a background controller that periodically probes Kubernetes nodes to automatically provision WeftServer resources for those with valid public connectivity.
 
 ### Purpose
-The `NodeProber` runs as a long-lived controller component to ensure every suitable node has an associated `WeftServer`. It operates on a fixed interval (`ProbeInterval`) to handle new nodes and recover from failures.
+The `NodeProber` runs as a manager runnable, executing periodic cycles every 3 hours. It ensures that every active node has an associated `WeftServer` resource by detecting missing servers and cleaning up orphaned ones.
 
 ### Key Components
 
-*   **`NodeProber` Struct**: Holds references to the Kubernetes client, scheme, and raw clientset (needed for reading pod logs).
-*   **`Start`**: Initializes the probe cycle and triggers an initial cleanup of orphaned servers before entering the main ticker loop.
-*   **`cleanupOrphanedServers`**: Iterates through existing `WeftServer` instances and deletes any whose target node no longer exists in the cluster. This prevents stale resources when nodes are removed.
-*   **`probeNodes`**: Enumerates all nodes and delegates processing to `processNode`. Errors on individual nodes do not halt the entire batch.
-*   **`processNode`**: The core logic for a single node:
-    1.  Checks if a `WeftServer` named `node-<nodeName>` already exists in `weft-system`. If so, it skips.
-    2.  Creates a short-lived `Job` (`weft-probe-...`) running the `weft` binary with the `probe` argument. The job is pinned to the target node using `HostNetwork: true` to access local interfaces.
-    3.  Polls the job status for up to 60 seconds.
-    4.  On success, reads the pod logs to extract the public IP address.
-    5.  Constructs a `WeftServer` resource using the discovered IP (or fallback IPs) and a generated secret for the connection string.
+*   **`Start`**: Initializes the prober, performs an immediate probe/cleanup cycle, then enters a loop driven by `ProbeInterval`.
+*   **`cleanupOrphanedServers`**: Lists all current nodes and existing `WeftServer` resources. Deletes any `WeftServer` whose `weft.aquaduct.dev/node` label points to a node that no longer exists in the cluster.
+*   **`probeNodes` & `processNode`**: Iterates through all nodes. If a `WeftServer` named `node-<nodeName>` does not exist, it creates a short-lived probe Job.
+    *   The Job runs on the target node using `HostNetwork: true` to verify external reachability.
+    *   Upon job success, the controller reads pod logs to extract the verified public IPv4 address.
+    *   It creates a new `WeftServer` CRD instance, prioritizing the discovered public IP over internal/external node IPs for the connection string.
+*   **`probedIP`**: Parses probe logs (stripping ANSI codes) to find the specific public IPv4 reported by the `weft probe` command, filtering out private or loopback addresses.
 
-### Configuration & Constraints
-*   **Namespace**: All operations occur within the `weft-system` namespace.
-*   **IP Priority**: Connection strings prioritize Public IP (discovered via logs), then External IP, then Internal IP.
-*   **TTL**: Probe jobs have a `TTLSecondsAfterFinished` of 300 seconds to prevent accumulation of completed job artifacts.
-*   **RBAC**: Requires permissions to get/list/watch Nodes and Jobs, and create/delete WeftServers.
+### Configuration
+*   **`TargetNamespace`**: All probe Jobs and resulting `WeftServer` resources are created in this namespace.
+*   **`WeftImage`**: Allows overriding the container image used for probe Jobs; defaults to `resource.DefaultWeftImage`.

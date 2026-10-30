@@ -1,5 +1,0 @@
-<!-- docdaemon ts:2026-10-29T20:36:52Z hash:b8181f0fc72846ba model:openrouter/qwen/qwen3.7-flash -->
-## TL;DR
-This script generates a compressed cpio+gzip initramfs image for Firecracker microVMs by assembling a minimal root filesystem.
-
-It accepts paths to a statically-linked BusyBox binary, an `/init` entrypoint, and optional static files or executables. The script creates a temporary directory structure (`/bin`, `/sbin`, etc.) and populates it with symlinks from BusyBox applets to the main binary, ensuring no circular references occur. It validates that all provided ELF binaries are statically linked, as the initramfs lacks a dynamic linker. Finally, it writes a standard `fstab` for proc/sys/dev/tmp/run mounts and archives the entire directory tree into the specified output file using `cpio` and `gzip`.

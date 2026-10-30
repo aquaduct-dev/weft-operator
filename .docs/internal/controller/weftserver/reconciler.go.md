@@ -1,11 +1,11 @@
-<!-- docdaemon ts:2026-10-29T20:36:12Z hash:81fff874d3f9b91e model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-30T03:00:02Z hash:d9074e97f7004bf1 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file implements the Kubernetes controller that manages WeftServer resources, ensuring their underlying infrastructure and live status are reconciled.
+This file implements the `WeftServerReconciler` that manages the lifecycle of Weft server deployments, services, and persistent volume claims within a Kubernetes cluster.
 
-The `WeftServerReconciler` owns the reconciliation loop for `weftv1alpha1.WeftServer` objects. It creates or updates a Deployment, Service, and PersistentVolumeClaim (PVC) when the server location is internal, handling configuration parsing from the ConnectionString. For external locations, it skips resource creation but continues to update status.
+The reconciler ensures that the desired state (Deployment, Service, PVC) matches the `WeftServer` custom resource specification. It parses the connection string to configure server arguments, handles image selection, and applies node affinity rules to exclude autoscaler nodes.
 
-Key behaviors include:
-*   **Resource Management**: Uses a helper `resource.Resource` to declaratively manage PVCs, Deployments, and Services, applying owner references and specific affinity rules to exclude autoscaler nodes.
-*   **Status Reconciliation**: Periodically polls the Weft server via `ListTunnels` to update live Tx/Rx counters in the CRD status. This runs on a 30-second interval (`statusRefreshInterval`) rather than triggering on every write to avoid hot loops.
-*   **Client Caching**: Maintains a cache of `WeftClient` instances keyed by connection string to prevent leaking HTTP connections and goroutines during frequent status refreshes.
-*   **Commit Optimization**: The `commitStatus` method compares the new status against a snapshot taken at the start of the pass, skipping API writes if no changes occurred to reduce API server load.
+Key components include:
+- **Resource Management**: Uses a generic `resource.Resource` helper to idempotently create or update PVCs, Deployments, and Services.
+- **Client Caching**: The `weftClientFor` method caches HTTP clients per connection string to prevent connection leaks during frequent status polling.
+- **Status Updates**: Scrapes tunnel statistics from the running server and updates the `WeftServer.Status`. It uses a `commitStatus` function with semantic equality checks to avoid write loops caused by changing byte counters.
+- **Reconciliation Loop**: Watches for spec changes via `GenerationChangedPredicate` and requeues after `statusRefreshInterval` (30s) to keep status data fresh without triggering excessive API writes.

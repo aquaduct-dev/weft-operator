@@ -1,33 +1,36 @@
-<!-- docdaemon ts:2026-10-29T20:37:07Z hash:41690945ff7822c5 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-30T03:00:10Z hash:0f81bdcb54eb0337 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-The `wefttunnel` package implements the controller responsible for establishing and managing network tunnels between Kubernetes namespaces.
+The `wefttunnel` package implements the controller logic for managing one-to-one tunnel deployments between WeftTunnel resources and target WeftServers.
 
 ## Overview
-This directory contains the reconciliation logic for `WeftTunnel` custom resources, ensuring connectivity to `WeftServer` targets via dedicated tunnel agent Deployments. It handles lifecycle management, target resolution across namespaces, and status synchronization to reflect tunnel availability.
+This directory contains the reconciliation loop that ensures Kubernetes Deployments exist for each configured tunnel endpoint. It handles resource creation, pruning of obsolete tunnels, and status propagation to reflect the health of underlying pods. The controller is designed to be idempotent, avoiding unnecessary API writes by carefully managing container field mutations.
 
 ## Deep Dive
-### Reconciliation Logic
-The `Reconcile` function iterates over target `WeftServer` objects, creating or updating a unique Deployment per server named `tunnel-<tunnel>-to-<server>`. It uses `controllerutil.CreateOrUpdate` with careful container mutation to preserve API-server-defaulted fields like termination messages, preventing infinite update loops caused by diffing on immutable defaults.
+### Reconciliation Loop
+The `WeftTunnelReconciler` watches for changes in `WeftServer` objects. When a server changes, the mapper enqueues all relevant tunnels. The reconciler resolves target servers (either explicit or all in namespace) and constructs tunnel URLs. It uses `controllerutil.CreateOrUpdate` to maintain Deployment resources, ensuring they match the desired spec.
 
-### Target Selection and Filtering
-Tunnels with empty `TargetServers` connect to all local servers plus those in `weft-system`. Explicit targets are resolved within the tunnel's namespace. The controller watches both `WeftTunnel` and `WeftServer` resources, using `GenerationChangedPredicate` to filter out status-only updates and avoid unnecessary reconciliations.
+### Idempotency and Mutation
+To prevent infinite update loops caused by API server defaults, the reconciler mutates existing container fields in-place via `containerByName`. This preserves fields like `TerminationMessagePath` which would otherwise be stripped and restored on every reconcile cycle. Readiness is determined by `ReadyReplicas` rather than `AvailableReplicas`, combined with a `MinReadySeconds` of 15s to filter out transient pod flapping.
 
-### Status Updates
-The `updateStatus` function checks if associated Deployments have `ReadyReplicas > 0`. It sets the `Available` condition on the `WeftTunnel` status directly based on `ReadyReplicas` rather than `AvailableReplicas`, supported by setting `MinReadySeconds: 15` on the Deployment to stabilize flapping pods.
+### Pruning and Status
+The controller lists existing deployments labeled with the tunnel name and deletes any not currently expected, preventing orphaned resources. A deferred `updateStatus` function checks if all associated deployments have `ReadyReplicas > 0`, setting the `Available` condition accordingly. This ensures the Custom Resource status accurately mirrors the state of its backing infrastructure.
 
 ## Key Interfaces
-*   `WeftTunnelReconciler`: Main controller struct implementing the reconcile loop.
-*   `SetupWithManager`: Configures the controller to watch relevant resources.
-*   `findTunnelsForServer`: Maps server events to relevant tunnel requests.
+- `WeftTunnelReconciler`: Main struct implementing the reconciliation loop.
+- `SetupWithManager`: Configures the controller to watch `WeftServer` objects.
+- `findTunnelsForServer`: Mapper function that enqueues tunnels based on server matching.
 
 ## Dependencies
-*   Kubernetes API types (`apps/v1`, `core/v1`)
-*   `controller-runtime` (client, metrics, predicates)
-*   Ginkgo/Gomega for testing infrastructure
+- `aquaduct.dev/weft-operator/api/v1alpha1`: Custom resource definitions.
+- `aquaduct.dev/weft-operator/internal/resource`: Shared CRUD logic.
+- `sigs.k8s.io/controller-runtime`: Controller framework and client interfaces.
+- `k8s.io/api/apps/v1`: Deployment APIs.
+- `k8s.io/api/core/v1`: Pod and Service APIs.
 
 ## Subcomponents
-*   `reconciler.go`: Core controller implementation.
-*   `suite_test.go`: Test environment bootstrap.
-*   `reconciler_test.go`: Integration tests for deployment lifecycle.
-*   `reconciler_idempotency_test.go`: Tests for update stability.
-*   `reconciler_status_test.go`: Tests for status propagation.
+- `reconciler.go`: Core controller implementation.
+- `reconciler_test.go`: Integration tests for deployment lifecycle and targeting.
+- `reconciler_idempotency_test.go`: Tests for update convergence and default preservation.
+- `reconciler_status_test.go`: Tests for status condition propagation.
+- `suite_test.go`: Test environment bootstrap using envtest.
+- `BUILD.bazel`: Bazel build configuration for library and tests.

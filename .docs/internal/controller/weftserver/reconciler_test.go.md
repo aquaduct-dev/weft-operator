@@ -1,5 +1,5 @@
-<!-- docdaemon ts:2026-10-29T20:36:14Z hash:08a364bc553481d2 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-30T02:59:53Z hash:ae2c119a7dd50fc8 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file contains integration tests for the `WeftServer` controller, verifying resource lifecycle and binding behavior.
+This file contains integration tests for the `WeftServer` controller, verifying that it correctly manages Kubernetes resources based on server location and connection configuration.
 
-It uses Ginkgo/Gomega to test reconciliation of `WeftServer` custom resources against a fake Kubernetes API server (`k8sClient`). The suite validates that internal locations trigger creation of a Deployment, Service, and PVC with specific configurations (e.g., `HostNetwork: true`, `--bind-ip=0.0.0.0`), while external locations result in cleanup of existing resources. A `mockClient` implements `weftserver.WeftClient` to simulate tunnel state without network calls. Recent changes ensure the server always binds to `0.0.0.0` regardless of node IP availability or connection string details.
+The test suite validates the reconciliation loop for `weftserver.WeftServerReconciler` using a mock `WeftClient`. It ensures that internal servers provision a Deployment, Service, and PersistentVolumeClaim (PVC) for certificate storage, while external servers have their local resources cleaned up. Key assertions verify that the Weft container binds to `0.0.0.0` regardless of node IP availability or connection string details, ensuring consistent network accessibility. The tests also confirm correct image selection, argument parsing (including port handling), and status updates reflecting tunnel metrics.

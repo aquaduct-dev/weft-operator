@@ -1,9 +1,7 @@
-<!-- docdaemon ts:2026-10-29T20:36:04Z hash:649b51d59d70ff5c model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-30T02:59:44Z hash:8871d5681f4ece62 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file defines the Bazel build targets for the `aquaducttaas` controller package, which mirrors external bastion resources from the aquaduct.dev API into the cluster.
+This file defines the Bazel build targets for the `aquaducttaas` controller package, including the main library and its associated test suite.
 
-The `go_library` target builds the core logic in `client.go`, `domain.go`, and `reconciler.go`. It depends on `controller-runtime` for reconciliation loops and standard Kubernetes APIs for object management. The library exposes a public visibility to allow other packages to import the controller logic.
+The `go_library` target compiles `client.go`, `domain.go`, and `reconciler.go`. The reconciler mirrors bastion resources from the external `aquaduct.dev` API into the cluster as `WeftServer` CRs, handling synchronization and lifecycle management. It depends on standard Kubernetes client-go libraries and the controller-runtime framework.
 
-The `filegroup` target aggregates all Go sources in the directory, providing a convenient way to reference the entire source set if needed by other rules.
-
-The `go_test` target runs unit and integration tests using Ginkgo and Gomega. It includes test sources (`client_test.go`, `reconciler_test.go`, `suite_test.go`) and declares data dependencies for the envtest environment, specifically requiring etcd, the kube-apiserver, kubectl, and Gateway API CRDs. The `KUBEBUILDER_ASSETS` environment variable is configured to point to the local toolchain assets, enabling isolated testing against a real Kubernetes control plane without an external cluster.
+The `go_test` target builds the test suite using Ginkgo and Gomega. It configures an integration test environment via `envtest`, requiring specific data assets like etcd, kube-apiserver, and kubectl to spin up a local control plane. The tests verify the reconciler's behavior against the API definitions in `//api/v1alpha1`.

@@ -1,11 +1,12 @@
-<!-- docdaemon ts:2026-10-29T20:36:00Z hash:7ab4e86ca5c25976 model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-30T02:59:37Z hash:b273484b3f0f39c6 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This file implements the `reflector` binary, which serves as the guest-side orchestrator for WeftLocalDNSReflector end-to-end tests.
+This file implements the `reflector` e2e test binary, acting as a multi-mode guest agent for WeftLocalDNSReflector integration tests.
 
-The binary operates in three distinct modes determined by its first argument:
+The binary supports four execution modes determined by command-line arguments:
 
-*   **Scenario (default):** Runs on a Firecracker microVM alongside k3s. It loads a scenario YAML via `--scenario`, initializes a Kubernetes client using `--kubeconfig`, and executes test steps defined in `scenario.go` or `default_scenario.go`. Results are written to a JSON report at `--report-json`. The default reflector logic (`default-reflector`) is optimized to keep traffic in-cluster using the `allHostnames` mode, avoiding per-cluster setup overhead.
-*   **Client:** Simulates a real workload inside a pod. It resolves reflected hostnames, performs TLS-verified HTTPS requests using only the system trust store, and pushes an image.
-*   **Sleep:** A lightweight entrypoint used by the pushed image to keep the container running after being pulled back through the reflector.
+*   **Default Scenario**: Runs on a firecracker microVM alongside k3s. It parses a `--scenario` flag to load YAML definitions, initializes a Kubernetes client, and executes specific test steps (either `defaultReflectorSteps` or generic `reflectorSteps`). Results are written to a JSON report via `clusterharness`. This mode handles the core validation of DNS reflection and trust injection.
+*   **Client**: Simulates a real workload inside a pod. It resolves reflected hostnames, performs TLS-verified HTTPS requests using only the system trust store, and pushes an image.
+*   **Sleep**: A minimal entrypoint used by the pushed image to keep the container running after being pulled through the reflector.
+*   **Fetch**: Performs a plain HTTP GET request against a reflected route.
 
-Key functions include `runScenario`, which manages the test lifecycle and timeout context, and `main`, which dispatches execution based on the command-line mode.
+Additionally, if the `--scenario` argument matches predefined extra scenarios (like `reflector-claims`), the binary delegates to `e2ekit.Main` for handling those specific test flows. The `scenarioArg` helper extracts the scenario name from raw arguments before standard flag parsing to support these alternative modes.

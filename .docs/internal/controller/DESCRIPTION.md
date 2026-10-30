@@ -1,46 +1,45 @@
-<!-- docdaemon ts:2026-10-29T20:38:55Z hash:fad7b7108f0ef55d model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-30T03:01:08Z hash:4957d981001594d4 model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This directory implements the core Kubernetes controllers that manage Weft infrastructure, including bastion mirroring, DNS resolution, gateway translation, local DNS reflection, and tunnel provisioning.
+This directory implements the core Kubernetes controllers that manage Weft infrastructure, including bastion mirroring, tunnel provisioning, gateway translation, and local DNS reflection.
 
 ## Overview
-The `controller` package orchestrates the lifecycle of Weft’s networking components by reconciling external state with Kubernetes resources. It bridges cloud-hosted services, standard Gateway API definitions, and internal cluster traffic routing into a unified operational model. Controllers handle complex interactions such as JWT authentication, certificate management, and deterministic load balancing to ensure reliable connectivity.
+The `controller` package orchestrates the lifecycle of custom resources (`WeftServer`, `WeftTunnel`, `DNSRecord`) by reconciling their desired state with actual cluster conditions. It bridges external cloud APIs and standard Kubernetes Gateway API constructs into internal proxy deployments, ensuring traffic is routed securely through bastions while maintaining efficient in-cluster resolution.
 
 ## Deep Dive
-### Bastion Mirroring and Domain Management
-The `aquaducttaas` controller syncs external bastions from the aquaduct.dev API into `WeftServer` resources, skipping suspended or IP-less nodes to prevent connection failures. It manages domain ownership via Cloudflare, asserting write access through PATCH operations and handling foreign domain errors gracefully. Authentication uses a two-step flow exchanging long-lived tokens for short-lived JWTs, with caching to mitigate 401s during server-side rotation.
+### Bastion Synchronization
+The `AquaductTaaS` controller mirrors external bastion servers from the aquaduct.dev API into `WeftServer` CRs. It handles two-step JWT authentication and caches tokens to prevent expiry races. Deletion logic is strictly ordered: dependent DNS records are removed first, then remote bastions are suspended to stop billing, and finally access-token secrets are released. This prevents orphaned resources and wedged finalizers.
 
-### Gateway Translation
-The `weftgateway` controller translates Gateway API resources into internal `WeftTunnel` and `DNSRecord` objects. It enforces strict listener-route attachment to prevent duplicate tunnel creation and proxy conflicts. Layer 7 traffic fans out across eligible bastions, while Layer 4 traffic is pinned to a single bastion to avoid port collisions. The controller also handles header rewriting and automatic DNS record generation based on listener hostnames.
+### Tunnel and Gateway Management
+The `weftgateway` controller translates Gateway API resources into `WeftTunnel` CRs. It distinguishes between Layer 7 (fan-out) and Layer 4 (pinned) protocols, constructing appropriate URLs for each. The `wefttunnel` controller then ensures Deployments exist for these tunnels, using idempotent mutation strategies to avoid infinite update loops caused by API server defaults.
 
 ### Local DNS Reflection
-The `weftlocaldnsreflector` resolves public hostnames inside the cluster using CoreDNS overrides and node-level `/etc/hosts` updates, avoiding hairpinning through bastions. It manages TLS certificates and trust bundles, enforcing a "trust gate" to prevent outages during rollout. A leader-only default reflector serves all published hostnames, improving performance for bulk operations like image pulls.
+The `weftlocaldnsreflector` resolves public hostnames internally to prevent traffic hairpinning. It coordinates certificate issuance and CoreDNS configuration, ensuring TLS trust across namespaces before activating overrides. A "trust gate" mechanism prevents handshake failures during rollout by validating pod readiness.
 
-### Tunnel and Server Lifecycle
-The `wefttunnel` controller establishes network tunnels between namespaces by creating dedicated agent Deployments per target server. It filters status-only updates to avoid unnecessary reconciliations and stabilizes availability conditions using `MinReadySeconds`. The `weftserver` controller provisions server instances on eligible nodes, probing connectivity and maintaining live Tx/Rx metrics via a cached HTTP client to prevent connection leaks.
+### Server Lifecycle
+The `weftserver` controller manages underlying infrastructure like Deployments and PVCs. It includes a background node prober that discovers nodes with public connectivity and auto-provisions servers. Client caching is used to prevent connection leaks during frequent status polling.
 
 ## Key Interfaces
-*   `AquaductTaaSReconciler`: Reconciles external bastions into `WeftServer` resources.
-*   `DNSRecordReconciler`: Manages domain registration and DNS resolution.
-*   `WeftGatewayReconciler`: Translates Gateway API resources into tunnels and DNS records.
-*   `Reconciler` (weftlocaldnsreflector): Drives desired state for in-cluster DNS reflection.
-*   `WeftServerReconciler`: Provisions and monitors WeftServer custom resources.
-*   `WeftTunnelReconciler`: Manages tunnel agent Deployments and target connectivity.
-*   `HTTPAPIClient`: Handles authenticated HTTP interactions with the aquaduct.dev API.
-*   `NodeProber`: Discovers new nodes and provisions missing servers.
+- `AquaductTaaSReconciler`: Syncs bastions and domains via the aquaduct.dev API.
+- `DNSRecordReconciler`: Manages domain registration and ownership assertions.
+- `WeftGatewayReconciler`: Translates Gateway API routes into WeftTunnels.
+- `WeftLocalDNSReflector`: Resolves public hostnames inside the cluster.
+- `WeftServerReconciler`: Manages server deployments and metrics.
+- `WeftTunnelReconciler`: Provisions tunnel Deployments for target servers.
+- `NodeProber`: Discovers nodes and provisions servers automatically.
 
 ## Dependencies
-*   `controller-runtime`: Kubernetes operator framework for reconciliation loops.
-*   `gateway-api`: Standard Gateway API types and clients.
-*   `//internal/pki`: PKI management for CA and certificate generation.
-*   `//internal/trust`: Trust configuration and bundle construction.
-*   Ginkgo/Gomega: Testing frameworks for suite execution.
-*   Envtest: Local test environment setup for integration tests.
+- `controller-runtime`: Kubernetes controller framework.
+- `client-go`: Standard Kubernetes client libraries.
+- `gateway-api`: Kubernetes Gateway API types.
+- `envtest`: Testing environment for integration tests.
+- `Ginkgo/Gomega`: BDD testing framework.
 
 ## Subcomponents
-*   `aquaducttaas/`: Bastion mirroring and domain management controller.
-*   `dnsrecord/`: DNSRecord controller for domain registration and resolution.
-*   `suite_test.go`: Integration test environment setup.
-*   `weftgateway/`: Gateway API to tunnel/DNS translation controller.
-*   `weftlocaldnsreflector/`: In-cluster DNS reflection and trust management.
-*   `weftserver/`: WeftServer provisioning and node discovery.
-*   `wefttunnel/`: Tunnel agent deployment and connectivity management.
+- `aquaducttaas/`: Bastion mirroring and domain registration.
+- `dnsrecord/`: DNS record lifecycle management.
+- `weftgateway/`: Gateway API to WeftTunnel translation.
+- `weftlocaldnsreflector/`: In-cluster DNS resolution and TLS.
+- `weftserver/`: Server deployment and node probing.
+- `wefttunnel/`: Tunnel deployment management.
+- `suite_test.go`: Integration test setup.
+- `BUILD.bazel`: Build rules for tests.

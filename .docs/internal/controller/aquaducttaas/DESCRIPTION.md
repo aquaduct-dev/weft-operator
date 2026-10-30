@@ -1,38 +1,41 @@
-<!-- docdaemon ts:2026-10-29T20:37:09Z hash:479fe41b446b8fdf model:openrouter/qwen/qwen3.7-flash -->
+<!-- docdaemon ts:2026-10-30T03:00:10Z hash:169d2a98466d197e model:openrouter/qwen/qwen3.7-flash -->
 ## TL;DR
-This directory implements the `AquaductTaaS` controller, mirroring cloud-hosted bastion servers and managing domain registrations from the aquaduct.dev API into Kubernetes.
+This directory implements the `AquaductTaaS` controller, which mirrors external bastion servers from the aquaduct.dev API into the cluster as `WeftServer` resources.
 
 ## Overview
-The `aquaducttaas` package provides two primary reconcilers: `AquaductTaaSReconciler` for syncing external bastions as `WeftServer` resources, and a DNSRecord reconciler for managing domain ownership via Cloudflare. It handles complex lifecycle management, including strict deletion ordering to prevent resource leaks and automatic JWT token rotation to maintain API connectivity.
+The `aquaducttaas` package bridges the gap between cloud-hosted infrastructure and Kubernetes-native resource management. It authenticates with the Aquaduct.dev API using a two-step JWT flow, synchronizes bastion states to local `WeftServer` Custom Resources, and manages domain registrations via `DNSRecord` CRs. The controller ensures safe lifecycle management, including strict deletion ordering to prevent orphaned resources or wedged finalizers.
 
 ## Deep Dive
-### Bastion Mirroring
-The `AquaductTaaSReconciler` polls `api.aquaduct.dev` for external servers and creates corresponding `WeftServer` objects in the cluster. It skips suspended or IP-less bastions to avoid connection failures. On deletion, it enforces a strict cleanup order: cascading deletes of dependent `DNSRecord` objects, suspending managed bastions via the API, and releasing finalizers on the access-token secret only when no other references exist. Status updates are optimized to prevent unnecessary resource version bumps that could trigger re-queue loops.
+### Synchronization and Mirroring
+The `AquaductTaaSReconciler` polls the `/api/bastion` endpoint to maintain a desired state of `WeftServer` objects. It uses labels to track ownership and prunes stale entries. To avoid watch loops caused by unnecessary status updates, the reconciler only writes to the status subresource when actual state changes or the sync heartbeat becomes stale. Suspended bastions or those without IPs are skipped to prevent downstream tunnel pods from crashing.
 
-### Domain Management
-The DNSRecord reconciler manages domain ownership at aquaduct.dev. It asserts write access by PATCHing records, handling errors like `ErrDomainForeign` if another user owns the record. Creation is idempotent, and resolution fetches current A-record IPs from Cloudflare. The spec’s `domainName` field is immutable, forcing delete-and-recreate for renames to allow finalizers to release the original name.
+### Authentication and Client Management
+The `HTTPAPIClient` handles two-step authentication, exchanging long-lived access tokens for short-lived JWTs. It caches these tokens with a grace period to prevent expiry races and automatically retries on 401 responses. Context values allow per-request endpoint overrides, enabling multiple `AquaductTaaS` resources to share a single client instance safely.
 
-### Authentication & Client Logic
-The HTTP client implements two-step authentication, exchanging a long-lived access token for a short-lived JWT via an authz endpoint. It caches the JWT with a 30-second grace period to prevent spurious 401s and automatically retries on failure to handle server-side token rotation. Connection strings use a default port of 9092 if the API response omits one.
+### Domain Registration and Ownership
+The `DomainAPIClient` manages DNS records at aquaduct.dev. It uses `PUT` for registration and `PATCH` to assert ownership, surfacing conflicts (409) or foreign ownership (403/401) as specific errors rather than retrying indefinitely. This allows the reconciler to set appropriate status conditions for domains that cannot be claimed.
+
+### Deletion Safety
+Deletion logic is strictly ordered: dependent `DNSRecord` objects are cascaded-deleted first, then remote bastions are suspended to stop billing, and finally, the access-token Secret pin is released. A secondary finalizer on the token Secret prevents deletion while any `AquaductTaaS` in the namespace still references it, avoiding cleanup wedges.
 
 ## Key Interfaces
-*   `HTTPAPIClient`: Handles HTTP interactions with the aquaduct.dev API, including JWT caching and retry logic.
-*   `APIClient`: Interface abstracting API interactions for testability.
-*   `AquaductTaaSReconciler`: Controller reconciling external bastions into `WeftServer` resources.
-*   `DomainAPIClient`: Abstracts domain registration and ownership operations.
-*   `ExternalServer`: Struct representing the state of a remote bastion server.
+- `APIClient`: Interface for interacting with the aquaduct.dev bastion API.
+- `DomainAPIClient`: Interface for managing domain registrations and DNS records.
+- `AquaductTaaSReconciler`: Controller-runtime reconciler for syncing bastions and domains.
+- `ExternalServer`: Domain model representing a bastion server.
+- `Domain`: Domain model representing a registered DNS record.
 
 ## Dependencies
-*   `controller-runtime`: For reconciliation loops and Kubernetes object management.
-*   Standard Kubernetes APIs: For CRD definitions and client-go interactions.
-*   Ginkgo/Gomega: For unit and integration testing infrastructure.
-*   Envtest: For isolated testing against a real Kubernetes control plane.
+- `controller-runtime`: Kubernetes controller framework.
+- `client-go`: Standard Kubernetes client libraries.
+- `envtest`: Testing environment for integration tests.
+- `Ginkgo/Gomega`: BDD testing framework.
 
 ## Subcomponents
-*   `client.go`: HTTP client implementation and data models for bastion management.
-*   `client_test.go`: Tests for authentication, JWT caching, and API interactions.
-*   `domain.go`: Domain model and client interface for DNSRecord management.
-*   `reconciler.go`: Core logic for the AquaductTaaS reconciler.
-*   `reconciler_test.go`: Test suite for reconciler lifecycle and error handling.
-*   `suite_test.go`: Integration test environment setup using envtest.
-*   `BUILD.bazel`: Bazel build targets for library, tests, and source aggregation.
+- `client.go`: HTTP client implementation for bastion operations.
+- `domain.go`: Domain model and client for DNS record management.
+- `reconciler.go`: Main controller logic for synchronization and lifecycle.
+- `client_test.go`: Unit tests for the HTTP client.
+- `endpoint_test.go`: Tests for endpoint overrides and response handling.
+- `reconciler_test.go`: Ginkgo suite for reconciler lifecycle and cleanup.
+- `suite_test.go`: Integration test setup and environment initialization.
