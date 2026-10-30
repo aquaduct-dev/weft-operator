@@ -1,0 +1,17 @@
+# Namespaces for the tunnels/prober e2e: the operator's (where the main
+# WeftServer lives), the Gateway + backends, and a second namespace with a
+# WeftServer on a non-default port and hand-made WeftTunnels.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: weft-system
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: e2e-gw
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: e2e-alt

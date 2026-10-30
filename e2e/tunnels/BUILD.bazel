@@ -1,0 +1,151 @@
+# End-to-end tests for weft servers, tunnels and the Gateway controller:
+# real `weft server` and `weft tunnel` pods made by the operator, with real
+# HTTP, TCP and UDP traffic through them.
+#
+# A single-node k3s boots in an airgapped firecracker microVM (see
+# @rules_firecracker), with the operator installed from the real chart (its
+# GatewayClass on, the cluster-default reflector off) and weft built from
+# source (@aquaduct_weft). The guest binary drives the scenarios; the same
+# binary is the in-cluster echo backend (HTTP/TCP/UDP) and the ACME stand-in.
+#
+# tunnels_test (tunnels_scenario.go), in order:
+#   - op.install: chart GatewayClass present, not Accepted before any Gateway.
+#   - prober.job-fails: startup probe Job (hostNetwork, weft:e2e, `probe`)
+#     fails on a node with only private IPs; no node-server0 WeftServer.
+#   - server.internal: WeftServer weft-system/main on :9092 -> hostNetwork
+#     Deployment with `server --connection-secret=… --bind-ip=0.0.0.0` (no
+#     --port), Service :9092, PVC bound via local-path, Available=True/
+#     Reconciled from a real ListTunnels.
+#   - server.custom-port: WeftServer e2e-alt/alt on :9093 -> --port=9093,
+#     Service :9093, Available.
+#   - gw.foreign-ignored: a Gateway of another class gets no finalizer,
+#     status or tunnels, and does not make the weft class Accepted.
+#   - gw.accepted: Gateway e2e-gw/gw (HTTP listener with hostname, TCP :7000,
+#     a spare TCP :7002 no route names, UDP :7100) gets the cleanup-dnsrecords finalizer, Accepted/Programmed;
+#     the class goes Accepted.
+#   - gw.tunnels: exactly one WeftTunnel per rule x listener its parentRef
+#     sectionName selects (none on the spare listener), named
+#     gw-<gw>-<hash8>, with labels, controller ref and src/dst URLs (the
+#     RequestHeaderModifier as weft's `/#name=val&name=+val&name=!del`).
+#   - tunnel.deployments: `tunnel-<t>-to-main` Deployments (args, image :e2e,
+#     minReadySeconds 15), only to weft-system's server; tunnels Available.
+#   - data.http / data.http-path / data.tcp / data.udp: traffic through the
+#     node's :80 vhost (header set/add/remove applied, PathPrefix routing,
+#     404 for unknown hosts), :7000 TCP echo and :7100 UDP echo. Current
+#     weft behavior pinned here: the matched PathPrefix is stripped before
+#     the backend sees the path (/api/thing -> /thing).
+#   Untestable on one node: a tunnel fanned out to two servers can only bind
+#   its listener on one of them (both servers share the host's ports), so
+#   tunnel.fanout checks the Deployments and that the port serves, not that
+#   both are Available. https listeners need ACME and are not covered.
+#   - server.status-tunnels / server.status-txrx: status.tunnels lists the
+#     tunnels; Tx/Rx grow after 256KiB of traffic.
+#   - server.no-conn-leak: across >=5 status refreshes the operator holds
+#     <= 2 connections to :9092 (the fixed leak added one per refresh).
+#   - tunnel.explicit-target / tunnel.fanout: explicit targetServers pins a
+#     tunnel to alt (traffic via :7300); empty targetServers fans out to the
+#     tunnel's namespace and weft-system, and deleting it removes both.
+#   - tunnel.connstr-change: a new connectionString reaches the server and
+#     tunnel args, and traffic recovers.
+#   - prune.route-edit / prune.listener-edit: edits replace the stale tunnel
+#     and its Deployment; the old TCP port stops listening.
+#   - gc.server-delete / gc.gateway-delete: owner-ref and finalizer chains.
+#
+# prober_test (prober_scenario.go): the NodeProber success path, in its own
+# VM because an auto-created weft-system server becomes a target of every
+# tunnel with empty targetServers. The node gets 198.51.100.10 on lo and a
+# hostNetwork 404 stand-in on :80; the probe Job succeeds, node-server0 is
+# created with that IP and goes Available; after an operator restart it is
+# kept, no new probe runs and a server labelled for a missing node is
+# deleted.
+#
+#   bazel test --config=kvm //e2e/tunnels/...
+
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("@rules_helm//helm:defs.bzl", "helm_template")
+load("//e2e:defs.bzl", "e2e_binary_image", "weft_e2e_test")
+
+go_library(
+    name = "tunnels_lib",
+    srcs = [
+        "backends.go",
+        "kube.go",
+        "main.go",
+        "prober_scenario.go",
+        "tunnels_scenario.go",
+    ],
+    importpath = "aquaduct.dev/weft-operator/e2e/tunnels",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//api/v1alpha1",
+        "//e2e/e2ekit",
+        "@io_k8s_api//apps/v1:apps",
+        "@io_k8s_api//batch/v1:batch",
+        "@io_k8s_api//core/v1:core",
+        "@io_k8s_apimachinery//pkg/api/errors",
+        "@io_k8s_apimachinery//pkg/apis/meta/v1:meta",
+        "@io_k8s_apimachinery//pkg/types",
+        "@io_k8s_apimachinery//pkg/util/intstr",
+        "@io_k8s_sigs_controller_runtime//pkg/client",
+        "@io_k8s_sigs_gateway_api//apis/v1:apis",
+        "@io_k8s_sigs_gateway_api//apis/v1alpha2",
+    ],
+)
+
+# Static: the microVM rootfs has no libc, and the same binary runs in the
+# backend pods.
+go_binary(
+    name = "tunnelse2e",
+    embed = [":tunnels_lib"],
+    pure = "on",
+    static = "on",
+    visibility = ["//visibility:public"],
+)
+
+# The echo backend / ACME stand-in image (this binary at /e2e).
+e2e_binary_image(
+    name = "self",
+    binary = ":tunnelse2e",
+    tag = "ghcr.io/aquaduct-dev/weft-operator-e2e-tunnels:e2e",
+)
+
+# The operator, rendered from the real chart with the preloaded images.
+helm_template(
+    name = "operator_manifest",
+    chart = "//chart:weft_operator",
+    opts = [
+        "--namespace=weft-system",
+        "--name-template=weft-operator",
+    ],
+    values = ["e2e-values.yaml"],
+)
+
+weft_e2e_test(
+    name = "tunnels_test",
+    extra_files = {
+        ":operator_manifest": "/etc/e2e/weft-operator.yaml",
+    },
+    extra_images = {
+        ":self_tar": "self.tar",
+    },
+    extra_manifests = {
+        "00-namespaces.yaml": "00-namespaces.yaml",
+    },
+    scenario = "tunnels",
+    test_binary = ":tunnelse2e",
+)
+
+weft_e2e_test(
+    name = "prober_test",
+    extra_files = {
+        ":operator_manifest": "/etc/e2e/weft-operator.yaml",
+    },
+    extra_images = {
+        ":self_tar": "self.tar",
+    },
+    extra_manifests = {
+        "00-namespaces.yaml": "00-namespaces.yaml",
+    },
+    scenario = "prober",
+    test_binary = ":tunnelse2e",
+)

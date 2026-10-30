@@ -473,6 +473,59 @@ var _ = Describe("WeftGateway Controller", func() {
 			Expect(tunnel.Spec.DstURL).To(Equal("tcp://tcp.example.com:5432"))
 		})
 
+		It("Should publish TCP and UDP routes only on the listener their sectionName names", func(ctx context.Context) {
+			fakeScheme := k8sClient.Scheme()
+			gwClass := &gatewayv1.GatewayClass{
+				ObjectMeta: metav1.ObjectMeta{Name: "weft-gateway-class-l4-section"},
+				Spec:       gatewayv1.GatewayClassSpec{ControllerName: weftgateway.ControllerName},
+			}
+			gwName := "my-gateway-l4-section"
+			gateway := &gatewayv1.Gateway{
+				TypeMeta:   metav1.TypeMeta{APIVersion: gatewayv1.GroupVersion.String(), Kind: "Gateway"},
+				ObjectMeta: metav1.ObjectMeta{Name: gwName, Namespace: "default"},
+				Spec: gatewayv1.GatewaySpec{
+					GatewayClassName: gatewayv1.ObjectName(gwClass.Name),
+					Listeners: []gatewayv1.Listener{
+						{Name: "tcp-a", Port: 7000, Protocol: gatewayv1.TCPProtocolType},
+						{Name: "tcp-b", Port: 7001, Protocol: gatewayv1.TCPProtocolType},
+						{Name: "udp-a", Port: 7100, Protocol: gatewayv1.UDPProtocolType},
+						{Name: "udp-b", Port: 7101, Protocol: gatewayv1.UDPProtocolType},
+					},
+				},
+			}
+			port := gatewayv1.PortNumber(9000)
+			pinned := func(section string) gatewayv1.CommonRouteSpec {
+				s := gatewayv1.SectionName(section)
+				return gatewayv1.CommonRouteSpec{ParentRefs: []gatewayv1.ParentReference{{Name: gatewayv1.ObjectName(gwName), SectionName: &s}}}
+			}
+			backend := []gatewayv1.BackendRef{{BackendObjectReference: gatewayv1.BackendObjectReference{Name: "echo", Port: &port}}}
+			tcpRoute := &gatewayv1alpha2.TCPRoute{
+				ObjectMeta: metav1.ObjectMeta{Name: "tcp-pinned", Namespace: "default"},
+				Spec:       gatewayv1alpha2.TCPRouteSpec{CommonRouteSpec: pinned("tcp-b"), Rules: []gatewayv1alpha2.TCPRouteRule{{BackendRefs: backend}}},
+			}
+			udpRoute := &gatewayv1alpha2.UDPRoute{
+				ObjectMeta: metav1.ObjectMeta{Name: "udp-pinned", Namespace: "default"},
+				Spec:       gatewayv1alpha2.UDPRouteSpec{CommonRouteSpec: pinned("udp-a"), Rules: []gatewayv1alpha2.UDPRouteRule{{BackendRefs: backend}}},
+			}
+			fakeClient := fakeclient.NewClientBuilder().
+				WithScheme(fakeScheme).
+				WithObjects(gwClass, gateway, tcpRoute, udpRoute).
+				WithStatusSubresource(gwClass, gateway).
+				Build()
+			r := &weftgateway.WeftGatewayReconciler{Client: fakeClient, Scheme: fakeScheme}
+
+			_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: gateway.Name, Namespace: gateway.Namespace}})
+			Expect(err).NotTo(HaveOccurred())
+
+			var tunnelList weftv1alpha1.WeftTunnelList
+			Expect(fakeClient.List(ctx, &tunnelList, client.MatchingLabels{"gateway": gwName})).To(Succeed())
+			var dsts []string
+			for _, t := range tunnelList.Items {
+				dsts = append(dsts, t.Spec.DstURL)
+			}
+			Expect(dsts).To(ConsistOf("tcp://:7001", "udp://:7100"))
+		})
+
 		It("Should create WeftTunnels with https:// scheme for TLSRoute (passthrough)", func(ctx context.Context) {
 			fakeScheme := k8sClient.Scheme()
 

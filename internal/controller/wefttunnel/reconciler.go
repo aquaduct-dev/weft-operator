@@ -176,9 +176,15 @@ func (r *WeftTunnelReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			tunnelContainer.Image = image
 			tunnelContainer.Args = cmdArgs
 			tunnelContainer.ImagePullPolicy = resource.PullPolicy(image)
-			err := controllerutil.SetOwnerReference(&weftTunnel, dep, r.Scheme)
+			// A controller reference, not a plain owner reference: Owns()
+			// only maps events from Deployments whose controller is the
+			// tunnel, so with a plain ref the Deployment becoming ready never
+			// re-queued the tunnel and it stayed Available=False/
+			// WaitingForDeployments until something else touched it.
+			// (Upserting replaces an existing plain ref to the same tunnel.)
+			err := controllerutil.SetControllerReference(&weftTunnel, dep, r.Scheme)
 			if err != nil {
-				log.Error(err, "SetOwnerReference failed")
+				log.Error(err, "SetControllerReference failed")
 				return err
 			}
 			return nil
