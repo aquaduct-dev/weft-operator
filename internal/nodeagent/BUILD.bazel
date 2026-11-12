@@ -6,6 +6,7 @@ go_library(
         "agent.go",
         "certsd.go",
         "hostsfile.go",
+        "procstart.go",
     ],
     importpath = "aquaduct.dev/weft-operator/internal/nodeagent",
     visibility = ["//:__subpackages__"],

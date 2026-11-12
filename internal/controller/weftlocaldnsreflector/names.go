@@ -34,6 +34,8 @@ const (
 	caMountPath  = "/etc/weft-local/ca"
 	// hostEtcPath is where the node agent sees the node's /etc.
 	hostEtcPath = "/host/etc"
+	// hostProcPath is where the node agent sees the node's /proc.
+	hostProcPath = "/host/proc"
 )
 
 func caSecretName(r *weftv1alpha1.WeftLocalDNSReflector) string  { return r.Name + "-ca" }

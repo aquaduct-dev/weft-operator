@@ -15,6 +15,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -181,6 +182,171 @@ func TestAgentTickAndCleanup(t *testing.T) {
 	if entries, _ := os.ReadDir(certsDir); len(entries) != 0 {
 		t.Errorf("cleanup left certs.d entries: %v", entries)
 	}
+}
+
+// TestContainerdTrustGate covers the k3s registries.yaml case: k3s owns
+// gitea.lab0.us's hosts.toml, so that hostname may only point at the proxy
+// once containerd has (re)started after the CA reached the host bundle.
+func TestContainerdTrustGate(t *testing.T) {
+	dir := t.TempDir()
+	hostsFile := filepath.Join(dir, "hosts")
+	certsDir := filepath.Join(dir, "certs.d")
+	caFile := filepath.Join(dir, "ca.crt")
+	hostBundle := filepath.Join(dir, "ca-certificates.crt")
+	const distroRoots = "-----BEGIN CERTIFICATE-----\nZGlzdHJv\n-----END CERTIFICATE-----\n"
+	os.WriteFile(hostsFile, []byte(baseHosts), 0o644)
+	os.WriteFile(caFile, testCAPEM(t), 0o644)
+	os.WriteFile(hostBundle, []byte(distroRoots), 0o644)
+	foreign := filepath.Join(certsDir, "gitea.lab0.us", hostsTOML)
+	const k3sTOML = "server = \"https://gitea.lab0.us\"\n[host.\"http://192.168.86.88:30500\"]\n"
+	os.MkdirAll(filepath.Dir(foreign), 0o700)
+	os.WriteFile(foreign, []byte(k3sTOML), 0o644)
+
+	t0 := time.Date(2026, 11, 11, 20, 31, 0, 0, time.UTC)
+	now, started := t0, t0.Add(-2*time.Hour)
+	newAgent := func() *Agent {
+		cfg := Config{Reflector: "lab0", ServiceIP: "10.43.0.5", Hostnames: []string{"gitea.lab0.us", "other.lab0.us"},
+			CAFile: caFile, HostsFile: hostsFile, CertsDir: certsDir, HostTrustFiles: []string{hostBundle}}
+		a := NewAgent(cfg, zap.New(zap.UseDevMode(true)))
+		a.dialer = func(context.Context, string, string, *x509.CertPool) error { return nil }
+		a.now = func() time.Time { return now }
+		a.containerdStart = func() (time.Time, string, error) { return started, "containerd", nil }
+		return a
+	}
+	hostsLine := func() string {
+		b, _ := os.ReadFile(hostsFile)
+		return nodeLine(string(b), "10.43.0.5")
+	}
+	agent := newAgent()
+
+	// containerd started before the CA landed: only the hostname with an
+	// agent-owned certs.d entry is pointed at the proxy.
+	agent.Tick(context.Background())
+	t.Logf("containerd before CA: %q", hostsLine())
+	if got := hostsLine(); got != "10.43.0.5 other.lab0.us" {
+		t.Fatalf("hosts line = %q, want only other.lab0.us", got)
+	}
+	if b, _ := os.ReadFile(foreign); string(b) != k3sTOML {
+		t.Errorf("foreign hosts.toml disturbed:\n%s", b)
+	}
+	bundle, _ := os.ReadFile(hostBundle)
+	if _, since, ok := readCABlock(string(bundle), "lab0"); !ok || !since.Equal(t0) {
+		t.Fatalf("CA block stamp = %v found=%v, want %v", since, ok, t0)
+	}
+
+	// containerd restarted after the CA landed: both hostnames.
+	now, started = t0.Add(time.Hour), t0.Add(30*time.Minute)
+	agent.Tick(context.Background())
+	t.Logf("containerd after CA: %q", hostsLine())
+	if got := hostsLine(); got != "10.43.0.5 gitea.lab0.us other.lab0.us" {
+		t.Fatalf("hosts line = %q, want both hostnames", got)
+	}
+
+	// A restarted agent reads the time back from the bundle instead of
+	// treating the CA as just written.
+	now = t0.Add(2 * time.Hour)
+	agent = newAgent()
+	agent.Tick(context.Background())
+	if got := hostsLine(); got != "10.43.0.5 gitea.lab0.us other.lab0.us" {
+		t.Fatalf("after agent restart hosts line = %q, want both hostnames", got)
+	}
+
+	// Distro tooling regenerates the bundle and drops the block: the
+	// restored block is new, so containerd (started before it) is no longer
+	// known to trust the proxy.
+	os.WriteFile(hostBundle, []byte(distroRoots), 0o644)
+	now = t0.Add(3 * time.Hour)
+	agent.Tick(context.Background())
+	t.Logf("after bundle regenerated: %q", hostsLine())
+	if got := hostsLine(); got != "10.43.0.5 other.lab0.us" {
+		t.Fatalf("hosts line = %q, want only other.lab0.us", got)
+	}
+
+	// Without a readable start time the foreign hostname stays off.
+	started = t0.Add(4 * time.Hour)
+	agent.containerdStart = func() (time.Time, string, error) { return time.Time{}, "", errors.New("no containerd") }
+	agent.Tick(context.Background())
+	if got := hostsLine(); got != "10.43.0.5 other.lab0.us" {
+		t.Fatalf("unknown start: hosts line = %q, want only other.lab0.us", got)
+	}
+}
+
+// TestLegacyCABlockStamp: a block written by an agent that did not stamp it
+// is dated by the bundle's mtime, not by when the new agent first sees it.
+func TestLegacyCABlockStamp(t *testing.T) {
+	dir := t.TempDir()
+	ca := testCAPEM(t)
+	caFile := filepath.Join(dir, "ca.crt")
+	os.WriteFile(caFile, ca, 0o644)
+	hostBundle := filepath.Join(dir, "ca-certificates.crt")
+	legacy := "distro\n" + caBlockBegin("lab0") + "\n" + strings.TrimSpace(string(ca)) + "\n" + caBlockEnd("lab0") + "\n"
+	os.WriteFile(hostBundle, []byte(legacy), 0o644)
+	mtime := time.Date(2026, 11, 11, 20, 31, 0, 0, time.UTC)
+	os.Chtimes(hostBundle, mtime, mtime)
+
+	agent := NewAgent(Config{Reflector: "lab0", HostTrustFiles: []string{hostBundle}}, zap.New(zap.UseDevMode(true)))
+	agent.now = func() time.Time { return mtime.Add(3 * time.Hour) }
+	since, ok := agent.applyHostTrust(ca)
+	b, _ := os.ReadFile(hostBundle)
+	t.Logf("since=%v ok=%v bundle:\n%s", since, ok, b)
+	if !ok || !since.Equal(mtime) {
+		t.Fatalf("since = %v ok=%v, want %v", since, ok, mtime)
+	}
+	if !strings.Contains(string(b), caStampPrefix+"2026-11-11T20:31:00Z") {
+		t.Errorf("stamp not written into the block")
+	}
+
+	// A bundle without the block (or no bundle at all) is not trusted.
+	if _, ok := NewAgent(Config{Reflector: "lab0", HostTrustFiles: []string{filepath.Join(dir, "missing")}}, zap.New()).applyHostTrust(ca); ok {
+		t.Errorf("missing bundles reported as trusted")
+	}
+}
+
+func TestContainerdStart(t *testing.T) {
+	proc := t.TempDir()
+	os.WriteFile(filepath.Join(proc, "stat"), []byte("cpu  1 2 3\nbtime 1762800000\nprocesses 9\n"), 0o644)
+	stat := func(pid, comm string, ticks int) {
+		os.MkdirAll(filepath.Join(proc, pid), 0o755)
+		// Fields 3..21 are filler; starttime is field 22.
+		line := pid + " (" + comm + ") S" + strings.Repeat(" 0", 18) + " " + strconv.Itoa(ticks) + " 100 200\n"
+		os.WriteFile(filepath.Join(proc, pid, "stat"), []byte(line), 0o644)
+	}
+	stat("1", "systemd", 10)
+	stat("100", "k3s-agent", 500)
+	stat("200", "containerd", 1500)
+	stat("250", "containerd-shim", 1000)
+	stat("300", "containerd", 2500)
+	stat("400", "odd) (name", 100)
+	os.MkdirAll(filepath.Join(proc, "self"), 0o755)
+
+	got, comm, err := containerdStart(proc)
+	t.Logf("start=%v comm=%s err=%v", got, comm, err)
+	if err != nil || comm != "containerd" || !got.Equal(time.Unix(1762800000+15, 0)) {
+		t.Fatalf("got %v %q %v, want oldest containerd at btime+15s", got, comm, err)
+	}
+
+	// No containerd child: fall back to k3s itself.
+	os.RemoveAll(filepath.Join(proc, "200"))
+	os.RemoveAll(filepath.Join(proc, "300"))
+	if got, comm, err := containerdStart(proc); err != nil || comm != "k3s-agent" || !got.Equal(time.Unix(1762800000+5, 0)) {
+		t.Errorf("fallback got %v %q %v", got, comm, err)
+	}
+	if c, ticks, ok := parseStat("400 (odd) (name) S" + strings.Repeat(" 0", 18) + " 77 1\n"); !ok || c != "odd) (name" || ticks != 77 {
+		t.Errorf("parseStat = %q %d %v", c, ticks, ok)
+	}
+	if _, _, err := containerdStart(""); err == nil {
+		t.Errorf("empty proc dir accepted")
+	}
+}
+
+// nodeLine returns the first line of content starting with prefix.
+func nodeLine(content, prefix string) string {
+	for l := range strings.SplitSeq(content, "\n") {
+		if strings.HasPrefix(l, prefix) {
+			return l
+		}
+	}
+	return ""
 }
 
 func TestParseFlags(t *testing.T) {
