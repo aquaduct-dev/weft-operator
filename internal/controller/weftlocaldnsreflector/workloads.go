@@ -166,6 +166,7 @@ func (r *Reconciler) ensureNodeAgent(ctx context.Context, refl *weftv1alpha1.Wef
 			"--hosts-file=" + path.Join(hostEtcPath, "hosts"),
 			"--host-trust-files=" + strings.Join(hostTrustFiles(), ","),
 			"--certs-dir=" + certsDir,
+			"--host-proc=" + hostProcPath,
 		}
 		// Root plus DAC_OVERRIDE to edit host files that may not be owned
 		// by root (e.g. images built by an unprivileged rootfs builder);
@@ -189,6 +190,12 @@ func (r *Reconciler) ensureNodeAgent(ctx context.Context, refl *weftv1alpha1.Wef
 			// its host path, which containerd resolves.
 			{Name: "certs-d", MountPath: certsDir},
 			{Name: "ca", MountPath: caMountPath, ReadOnly: true},
+			// The node's /proc, read-only, so the agent can tell whether
+			// containerd started after the CA reached the host bundle
+			// (Go loads system roots once). A mount rather than hostPID:
+			// it shows host processes without sharing their PID
+			// namespace, so the agent cannot signal them.
+			{Name: "host-proc", MountPath: hostProcPath, ReadOnly: true},
 		}
 		removeVolume(&spec.Volumes, "hosts")
 		setVolume(&spec.Volumes, corev1.Volume{Name: "host-etc", VolumeSource: corev1.VolumeSource{
@@ -196,6 +203,9 @@ func (r *Reconciler) ensureNodeAgent(ctx context.Context, refl *weftv1alpha1.Wef
 		}})
 		setVolume(&spec.Volumes, corev1.Volume{Name: "certs-d", VolumeSource: corev1.VolumeSource{
 			HostPath: &corev1.HostPathVolumeSource{Path: certsDir, Type: ptr(corev1.HostPathDirectoryOrCreate)},
+		}})
+		setVolume(&spec.Volumes, corev1.Volume{Name: "host-proc", VolumeSource: corev1.VolumeSource{
+			HostPath: &corev1.HostPathVolumeSource{Path: "/proc", Type: ptr(corev1.HostPathDirectory)},
 		}})
 		setVolume(&spec.Volumes, corev1.Volume{Name: "ca", VolumeSource: corev1.VolumeSource{
 			ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: trust.ConfigMapName}},
