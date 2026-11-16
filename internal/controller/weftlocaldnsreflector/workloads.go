@@ -142,6 +142,15 @@ func (r *Reconciler) ensureNodeAgent(ctx context.Context, refl *weftv1alpha1.Wef
 		if ds.CreationTimestamp.IsZero() {
 			ds.Spec.Selector = &metav1.LabelSelector{MatchLabels: selectorLabels(refl, componentNodeAgent)}
 		}
+		// Every node's agent is independent, and one restarting only sends
+		// that node to the public path for a moment. The default
+		// maxUnavailable of 1 would let a single NotReady node (whose old
+		// pod sits Terminating until its kubelet returns, e.g. one the
+		// autoscaler suspended) stall the rollout on every other node.
+		ds.Spec.UpdateStrategy = appsv1.DaemonSetUpdateStrategy{
+			Type:          appsv1.RollingUpdateDaemonSetStrategyType,
+			RollingUpdate: &appsv1.RollingUpdateDaemonSet{MaxUnavailable: ptr(intstr.FromString("100%"))},
+		}
 		tmpl := &ds.Spec.Template
 		tmpl.Labels = managedLabels(refl, componentNodeAgent)
 		spec := &tmpl.Spec

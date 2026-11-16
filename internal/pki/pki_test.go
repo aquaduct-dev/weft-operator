@@ -73,6 +73,14 @@ func TestCertificates(t *testing.T) {
 	if wh, _ := ParseCert(whPEM); wh.NotAfter.Sub(now) != 365*24*time.Hour {
 		t.Errorf("webhook leaf valid for %s, want a year", wh.NotAfter.Sub(now))
 	}
+	// A year-long certificate is replaced under the one-day policy...
+	if RenewalReason(whPEM, caPEM, hosts, now, ReflectorLeaf) == "" {
+		t.Errorf("a certificate outliving the reflector policy must be reissued")
+	}
+	// ...but a fresh one-day certificate is not, even with the clock a bit behind.
+	if r := RenewalReason(leafPEM, caPEM, hosts, now.Add(-time.Minute), ReflectorLeaf); r != "" {
+		t.Errorf("fresh reflector certificate reissued: %s", r)
+	}
 
 	if _, _, err := IssueLeaf(caPEM, caKey, nil, now, ReflectorLeaf); err == nil {
 		t.Errorf("issuing with no hostnames must fail")

@@ -149,6 +149,7 @@ var _ = Describe("WeftLocalDNSReflector", func() {
 		Expect(ds.Spec.Template.Spec.Containers[0].VolumeMounts).To(ContainElements(
 			corev1.VolumeMount{Name: "host-home", MountPath: "/host/home"},
 			corev1.VolumeMount{Name: "host-root-home", MountPath: "/host/root"}))
+		Expect(ds.Spec.UpdateStrategy.RollingUpdate.MaxUnavailable.String()).To(Equal("100%"))
 		Expect(ds.Spec.Template.Spec.Containers[0].SecurityContext.Capabilities.Add).To(ConsistOf(
 			corev1.Capability("DAC_OVERRIDE"), corev1.Capability("SETUID"), corev1.Capability("SETGID")))
 		Expect(ds.Spec.Template.Spec.HostNetwork).To(BeTrue())

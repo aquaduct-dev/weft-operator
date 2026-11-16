@@ -135,6 +135,12 @@ func RenewalReason(leafPEM, caCertPEM []byte, dnsNames []string, now time.Time, 
 	if !slices.Equal(SortedLower(leaf.DNSNames), SortedLower(dnsNames)) {
 		return fmt.Sprintf("SANs %v differ from %v", leaf.DNSNames, SortedLower(dnsNames))
 	}
+	// Issued under a longer-lived policy (e.g. before the reflector's
+	// certificate went from a year to a day): replace it now rather than
+	// when the old lifetime runs out.
+	if leaf.NotAfter.After(now.Add(p.Validity + clockSkew)) {
+		return fmt.Sprintf("expires %s, later than the %s lifetime allows", leaf.NotAfter.Format(time.RFC3339), p.Validity)
+	}
 	if now.After(leaf.NotAfter.Add(-p.RenewBefore)) {
 		return fmt.Sprintf("expires %s, inside the %s renewal window", leaf.NotAfter.Format(time.RFC3339), p.RenewBefore)
 	}
