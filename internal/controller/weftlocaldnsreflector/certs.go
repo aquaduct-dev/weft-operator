@@ -68,9 +68,9 @@ func (r *Reconciler) ensureCertificates(ctx context.Context, refl *weftv1alpha1.
 	op, err := controllerutil.CreateOrUpdate(ctx, r.Client, tlsSecret, func() error {
 		tlsSecret.Type = corev1.SecretTypeTLS
 		tlsSecret.Labels = managedLabels(refl, "serving")
-		if reason := pki.RenewalReason(tlsSecret.Data[corev1.TLSCertKey], caCertPEM, hostnames, now); reason != "" {
+		if reason := pki.RenewalReason(tlsSecret.Data[corev1.TLSCertKey], caCertPEM, hostnames, now, pki.ReflectorLeaf); reason != "" {
 			logger.Info("Issuing serving certificate", "secret", ns+"/"+tlsSecretName(refl), "reason", reason, "hostnames", hostnames)
-			certPEM, keyPEM, err := pki.IssueLeaf(caCertPEM, caKeyPEM, hostnames, now)
+			certPEM, keyPEM, err := pki.IssueLeaf(caCertPEM, caKeyPEM, hostnames, now, pki.ReflectorLeaf)
 			if err != nil {
 				return err
 			}

@@ -188,7 +188,7 @@ Traffic from inside the cluster to a public weft hostname normally hairpins: pod
 It is cluster-scoped. It serves either the hostnames listed in `spec.hostnames` or, with `spec.allHostnames: true`, every http/https hostname any `WeftTunnel` serves. Two reflectors never serve the same hostname. An explicit `hostnames` entry beats `allHostnames`, the oldest claim wins among equals, and the loser lists the hostname in `status.conflictingHostnames`. For each hostname it serves, it:
 
 1. Finds the `WeftTunnel`s whose `dstURL` has that host (including every tunnel a weft `Gateway` generates) and reuses their `srcURL` backends, so routing is defined once.
-2. Issues a self-signed CA (Secret `<name>-ca`) and a serving certificate for the hostnames (Secret `<name>-tls`), renewed automatically 30 days before expiry.
+2. Issues a self-signed CA (Secret `<name>-ca`) and a serving certificate for the hostnames (Secret `<name>-tls`), valid for one day and reissued after 12 hours (each reissue rolls the proxy without a gap).
 3. Runs `weft proxy --tls-cert … --tls-key …` (Deployment and ClusterIP Service `<name>-proxy`, ports 443/80) serving those backends.
 4. **Makes clients trust the CA, with no change to any workload:**
    - The operator publishes ConfigMap `weft-trust-bundle` in every namespace: the operator image's system roots plus every reflector CA.

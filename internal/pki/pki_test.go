@@ -16,7 +16,7 @@ func TestCertificates(t *testing.T) {
 		t.Fatal(err)
 	}
 	hosts := []string{"gitea.lab0.us", "Bazel-Cache.lab0.us"}
-	leafPEM, leafKey, err := IssueLeaf(caPEM, caKey, hosts, now)
+	leafPEM, leafKey, err := IssueLeaf(caPEM, caKey, hosts, now, ReflectorLeaf)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,18 +49,32 @@ func TestCertificates(t *testing.T) {
 		{"order and case do not matter", leafPEM, caPEM, []string{"bazel-cache.lab0.us", "GITEA.lab0.us"}, now, false},
 		{"missing", nil, caPEM, hosts, now, true},
 		{"host added", leafPEM, caPEM, append(hosts, "new.lab0.us"), now, true},
-		{"inside renewal window", leafPEM, caPEM, hosts, now.Add(LeafValidity - LeafRenewBefore + time.Hour), true},
+		{"before renewal window", leafPEM, caPEM, hosts, now.Add(ReflectorLeaf.Validity - ReflectorLeaf.RenewBefore - time.Hour), false},
+		{"inside renewal window", leafPEM, caPEM, hosts, now.Add(ReflectorLeaf.Validity - ReflectorLeaf.RenewBefore + time.Hour), true},
 		{"other CA", leafPEM, mustCA(t, now), hosts, now, true},
 	}
 	for _, c := range cases {
-		reason := RenewalReason(c.leaf, c.ca, c.hosts, c.at)
+		reason := RenewalReason(c.leaf, c.ca, c.hosts, c.at, ReflectorLeaf)
 		t.Logf("%s: reason=%q", c.name, reason)
 		if (reason != "") != c.renewal {
 			t.Errorf("%s: renewal=%v, want %v", c.name, reason != "", c.renewal)
 		}
 	}
 
-	if _, _, err := IssueLeaf(caPEM, caKey, nil, now); err == nil {
+	// The reflector's certificate lives one day.
+	if got := leaf.NotAfter.Sub(now); got != 24*time.Hour {
+		t.Errorf("reflector leaf valid for %s, want 24h", got)
+	}
+	// The webhook's still lives a year.
+	whPEM, _, err := IssueLeaf(caPEM, caKey, hosts, now, WebhookLeaf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wh, _ := ParseCert(whPEM); wh.NotAfter.Sub(now) != 365*24*time.Hour {
+		t.Errorf("webhook leaf valid for %s, want a year", wh.NotAfter.Sub(now))
+	}
+
+	if _, _, err := IssueLeaf(caPEM, caKey, nil, now, ReflectorLeaf); err == nil {
 		t.Errorf("issuing with no hostnames must fail")
 	}
 	if Fingerprint(leafPEM) == Fingerprint(caPEM) || len(Fingerprint(leafPEM)) != 16 {

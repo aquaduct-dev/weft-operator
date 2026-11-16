@@ -279,7 +279,7 @@ func (r *Reconciler) reconcile(ctx context.Context, refl *weftv1alpha1.WeftLocal
 	if !trusted {
 		recheck = orDefault(r.TrustBlockedRecheck, trustBlockedRecheck)
 	}
-	requeue := min(certs.NotAfter.Add(-pki.LeafRenewBefore).Sub(r.now()), maxRequeue, recheck)
+	requeue := min(certs.NotAfter.Add(-pki.ReflectorLeaf.RenewBefore).Sub(r.now()), maxRequeue, recheck)
 	requeue = max(requeue, min(recheck, 10*time.Second))
 	return ctrl.Result{RequeueAfter: requeue}, nil
 }

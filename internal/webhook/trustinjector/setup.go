@@ -74,9 +74,9 @@ func EnsureServingCert(ctx context.Context, c client.Client, cfg Config, now tim
 			delete(secret.Data, corev1.TLSCertKey)
 		}
 		names := []string{cfg.DNSName()}
-		if reason := pki.RenewalReason(secret.Data[corev1.TLSCertKey], secret.Data[caCertKey], names, now); reason != "" {
+		if reason := pki.RenewalReason(secret.Data[corev1.TLSCertKey], secret.Data[caCertKey], names, now, pki.WebhookLeaf); reason != "" {
 			logger.Info("Issuing webhook serving certificate", "reason", reason, "dnsName", cfg.DNSName())
-			cert, key, err := pki.IssueLeaf(secret.Data[caCertKey], secret.Data[caKeyKey], names, now)
+			cert, key, err := pki.IssueLeaf(secret.Data[caCertKey], secret.Data[caKeyKey], names, now, pki.WebhookLeaf)
 			if err != nil {
 				return err
 			}
