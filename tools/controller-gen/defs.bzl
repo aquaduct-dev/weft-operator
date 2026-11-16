@@ -56,7 +56,11 @@ def _controller_gen_impl(ctx):
             for out in $outputs; do
                 base=$(basename "$out")
                 # Find the generated file. We assume it's in the current directory or subdirectories.
-                found=$(find . -name "$base" | head -n 1)
+                # Skip bazel-out: it holds the declared (still empty) outputs, and
+                # an output directory such as crds/ has the same name as the one
+                # controller-gen writes, so which one find reports first depends
+                # on the filesystem's directory order.
+                found=$(find . -path ./bazel-out -prune -o -name "$base" -print | head -n 1)
                 if [ -n "$found" ]; then
                     # echo "Moving $found to $out"
                     if [ -d "$found" ]; then

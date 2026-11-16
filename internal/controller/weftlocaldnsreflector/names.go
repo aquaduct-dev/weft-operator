@@ -36,6 +36,10 @@ const (
 	hostEtcPath = "/host/etc"
 	// hostProcPath is where the node agent sees the node's /proc.
 	hostProcPath = "/host/proc"
+	// hostHomePath / hostRootHomePath are where the node agent sees the
+	// node's /home and /root, to find browser NSS databases.
+	hostHomePath     = "/host/home"
+	hostRootHomePath = "/host/root"
 )
 
 func caSecretName(r *weftv1alpha1.WeftLocalDNSReflector) string  { return r.Name + "-ca" }

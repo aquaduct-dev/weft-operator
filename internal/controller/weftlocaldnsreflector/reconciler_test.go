@@ -144,8 +144,13 @@ var _ = Describe("WeftLocalDNSReflector", func() {
 		}, timeout, interval).Should(Succeed())
 		agentArgs := ds.Spec.Template.Spec.Containers[0].Args
 		GinkgoWriter.Printf("node agent args: %v\n", agentArgs)
-		Expect(agentArgs).To(ContainElements("node-agent", "--service-ip="+serviceIP, "--hostnames=gitea.lab0.us", "--host-proc=/host/proc"))
+		Expect(agentArgs).To(ContainElements("node-agent", "--service-ip="+serviceIP, "--hostnames=gitea.lab0.us", "--host-proc=/host/proc", "--nss-homes=/host/home/*,/host/root"))
 		Expect(ds.Spec.Template.Spec.Containers[0].VolumeMounts).To(ContainElement(corev1.VolumeMount{Name: "host-proc", MountPath: "/host/proc", ReadOnly: true}))
+		Expect(ds.Spec.Template.Spec.Containers[0].VolumeMounts).To(ContainElements(
+			corev1.VolumeMount{Name: "host-home", MountPath: "/host/home"},
+			corev1.VolumeMount{Name: "host-root-home", MountPath: "/host/root"}))
+		Expect(ds.Spec.Template.Spec.Containers[0].SecurityContext.Capabilities.Add).To(ConsistOf(
+			corev1.Capability("DAC_OVERRIDE"), corev1.Capability("SETUID"), corev1.Capability("SETGID")))
 		Expect(ds.Spec.Template.Spec.HostNetwork).To(BeTrue())
 		Expect(ds.Spec.Template.Spec.Containers[0].Image).To(Equal("ghcr.io/aquaduct-dev/weft-operator:test"))
 

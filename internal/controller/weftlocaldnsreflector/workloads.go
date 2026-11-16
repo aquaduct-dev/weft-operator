@@ -167,16 +167,19 @@ func (r *Reconciler) ensureNodeAgent(ctx context.Context, refl *weftv1alpha1.Wef
 			"--host-trust-files=" + strings.Join(hostTrustFiles(), ","),
 			"--certs-dir=" + certsDir,
 			"--host-proc=" + hostProcPath,
+			"--nss-homes=" + path.Join(hostHomePath, "*") + "," + hostRootHomePath,
 		}
 		// Root plus DAC_OVERRIDE to edit host files that may not be owned
-		// by root (e.g. images built by an unprivileged rootfs builder);
+		// by root (e.g. images built by an unprivileged rootfs builder),
+		// and SETUID/SETGID to run certutil as the owner of each browser
+		// NSS database, so no root-owned files land in a home directory;
 		// nothing else.
 		c.SecurityContext = &corev1.SecurityContext{
 			RunAsUser:                ptr(int64(0)),
 			RunAsNonRoot:             ptr(false),
 			AllowPrivilegeEscalation: ptr(false),
 			ReadOnlyRootFilesystem:   ptr(true),
-			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}, Add: []corev1.Capability{"DAC_OVERRIDE"}},
+			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}, Add: []corev1.Capability{"DAC_OVERRIDE", "SETUID", "SETGID"}},
 		}
 		c.Resources = corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("5m"), corev1.ResourceMemory: resource.MustParse("16Mi")},
@@ -196,6 +199,11 @@ func (r *Reconciler) ensureNodeAgent(ctx context.Context, refl *weftv1alpha1.Wef
 			// it shows host processes without sharing their PID
 			// namespace, so the agent cannot signal them.
 			{Name: "host-proc", MountPath: hostProcPath, ReadOnly: true},
+			// The node's home directories, for the browser NSS
+			// databases (~/.pki/nssdb, Firefox profiles) that get the
+			// CA. Chrome and Firefox ignore the distro bundle.
+			{Name: "host-home", MountPath: hostHomePath},
+			{Name: "host-root-home", MountPath: hostRootHomePath},
 		}
 		removeVolume(&spec.Volumes, "hosts")
 		setVolume(&spec.Volumes, corev1.Volume{Name: "host-etc", VolumeSource: corev1.VolumeSource{
@@ -206,6 +214,12 @@ func (r *Reconciler) ensureNodeAgent(ctx context.Context, refl *weftv1alpha1.Wef
 		}})
 		setVolume(&spec.Volumes, corev1.Volume{Name: "host-proc", VolumeSource: corev1.VolumeSource{
 			HostPath: &corev1.HostPathVolumeSource{Path: "/proc", Type: ptr(corev1.HostPathDirectory)},
+		}})
+		setVolume(&spec.Volumes, corev1.Volume{Name: "host-home", VolumeSource: corev1.VolumeSource{
+			HostPath: &corev1.HostPathVolumeSource{Path: "/home", Type: ptr(corev1.HostPathDirectoryOrCreate)},
+		}})
+		setVolume(&spec.Volumes, corev1.Volume{Name: "host-root-home", VolumeSource: corev1.VolumeSource{
+			HostPath: &corev1.HostPathVolumeSource{Path: "/root", Type: ptr(corev1.HostPathDirectoryOrCreate)},
 		}})
 		setVolume(&spec.Volumes, corev1.Volume{Name: "ca", VolumeSource: corev1.VolumeSource{
 			ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: trust.ConfigMapName}},

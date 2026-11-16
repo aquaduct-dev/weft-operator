@@ -169,7 +169,7 @@ func TestSetup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reason := pki.RenewalReason(certPEM, wh.ClientConfig.CABundle, []string{cfg.DNSName()}, time.Now()); reason != "" {
+	if reason := pki.RenewalReason(certPEM, wh.ClientConfig.CABundle, []string{cfg.DNSName()}, time.Now(), pki.WebhookLeaf); reason != "" {
 		t.Errorf("serving cert does not match caBundle: %s", reason)
 	}
 	if _, err := os.Stat(filepath.Join(cfg.CertDir, "tls.key")); err != nil {

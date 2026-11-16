@@ -26,13 +26,27 @@ import (
 const (
 	// CAValidity is how long a generated CA is valid.
 	CAValidity = 10 * 365 * 24 * time.Hour
-	// LeafValidity is how long a serving certificate is valid.
-	LeafValidity = 365 * 24 * time.Hour
-	// LeafRenewBefore is how long before expiry a serving certificate is reissued.
-	LeafRenewBefore = 30 * 24 * time.Hour
 	// clockSkew backdates NotBefore so a host with a slightly slow clock
 	// does not reject a certificate minted seconds ago.
 	clockSkew = 5 * time.Minute
+)
+
+// LeafPolicy is how long a serving certificate is valid, and how long
+// before expiry it is reissued.
+type LeafPolicy struct {
+	Validity    time.Duration
+	RenewBefore time.Duration
+}
+
+var (
+	// ReflectorLeaf is a WeftLocalDNSReflector's serving certificate: one
+	// day, reissued at half-life. A leaked key is only good for a day, and
+	// the operator has 12 hours to recover before the proxy's certificate
+	// lapses. Each reissue rolls the proxy (a surge rollout, no gap).
+	ReflectorLeaf = LeafPolicy{Validity: 24 * time.Hour, RenewBefore: 12 * time.Hour}
+	// WebhookLeaf is the trust webhook's serving certificate. Its renewer
+	// runs daily, so it needs a long life.
+	WebhookLeaf = LeafPolicy{Validity: 365 * 24 * time.Hour, RenewBefore: 30 * 24 * time.Hour}
 )
 
 // NewCA returns a fresh self-signed ECDSA P-256 CA as PEM.
@@ -67,7 +81,7 @@ func NewCA(commonName string, now time.Time) (certPEM, keyPEM []byte, err error)
 }
 
 // IssueLeaf signs a serving certificate for dnsNames with the given CA.
-func IssueLeaf(caCertPEM, caKeyPEM []byte, dnsNames []string, now time.Time) (certPEM, keyPEM []byte, err error) {
+func IssueLeaf(caCertPEM, caKeyPEM []byte, dnsNames []string, now time.Time, p LeafPolicy) (certPEM, keyPEM []byte, err error) {
 	if len(dnsNames) == 0 {
 		return nil, nil, fmt.Errorf("issue serving certificate: no DNS names")
 	}
@@ -89,7 +103,7 @@ func IssueLeaf(caCertPEM, caKeyPEM []byte, dnsNames []string, now time.Time) (ce
 		Subject:      pkix.Name{CommonName: sans[0]},
 		DNSNames:     sans,
 		NotBefore:    now.Add(-clockSkew),
-		NotAfter:     now.Add(LeafValidity),
+		NotAfter:     now.Add(p.Validity),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
@@ -106,7 +120,7 @@ func IssueLeaf(caCertPEM, caKeyPEM []byte, dnsNames []string, now time.Time) (ce
 
 // RenewalReason returns why the serving certificate must be reissued, or ""
 // if it is still good for dnsNames.
-func RenewalReason(leafPEM, caCertPEM []byte, dnsNames []string, now time.Time) string {
+func RenewalReason(leafPEM, caCertPEM []byte, dnsNames []string, now time.Time, p LeafPolicy) string {
 	leaf, err := ParseCert(leafPEM)
 	if err != nil {
 		return "serving certificate missing or unparseable"
@@ -121,8 +135,8 @@ func RenewalReason(leafPEM, caCertPEM []byte, dnsNames []string, now time.Time) 
 	if !slices.Equal(SortedLower(leaf.DNSNames), SortedLower(dnsNames)) {
 		return fmt.Sprintf("SANs %v differ from %v", leaf.DNSNames, SortedLower(dnsNames))
 	}
-	if now.After(leaf.NotAfter.Add(-LeafRenewBefore)) {
-		return fmt.Sprintf("expires %s, inside the %s renewal window", leaf.NotAfter.Format(time.RFC3339), LeafRenewBefore)
+	if now.After(leaf.NotAfter.Add(-p.RenewBefore)) {
+		return fmt.Sprintf("expires %s, inside the %s renewal window", leaf.NotAfter.Format(time.RFC3339), p.RenewBefore)
 	}
 	return ""
 }
