@@ -95,6 +95,71 @@ http_file(
 )
 
 # ---------------------------------------------------------------------------
+# NSS certutil for the node agent, which adds the reflector CA to browser
+# trust stores (~/.pki/nssdb, Firefox profiles) on every node. These are the
+# alpine (v3.22, matching the base image) packages that `apk add nss-tools`
+# installs. An .apk is a gzipped tar stream, so each one is an image layer as
+# is. Alpine keeps only the newest build of a package on its mirrors: when one
+# of these URLs 404s, bump the version and sha256 to the current build.
+# ---------------------------------------------------------------------------
+
+http_file(
+    name = "alpine_x86_64_nspr",
+    downloaded_file_path = "nspr-4.36-r0.tar.gz",
+    sha256 = "7b6cd901bf406eff012a6fcaf55732345e7db07d1a7e059b639af11781d6fa02",
+    url = "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/x86_64/nspr-4.36-r0.apk",
+)
+
+http_file(
+    name = "alpine_x86_64_nss",
+    downloaded_file_path = "nss-3.114-r0.tar.gz",
+    sha256 = "c1615e523fbe35ea84636edb3b2a6d8216e9fa6b6cf2fdf1ec2e72b00f228360",
+    url = "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/x86_64/nss-3.114-r0.apk",
+)
+
+http_file(
+    name = "alpine_x86_64_nss_tools",
+    downloaded_file_path = "nss-tools-3.114-r0.tar.gz",
+    sha256 = "28b333e0f54c5867726c8adeb5bb904add01f23e1136005c078c49962d90061d",
+    url = "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/x86_64/nss-tools-3.114-r0.apk",
+)
+
+http_file(
+    name = "alpine_x86_64_sqlite_libs",
+    downloaded_file_path = "sqlite-libs-3.49.2-r1.tar.gz",
+    sha256 = "7af9a58595642de91ea35d3d070cd38d969680a720ce76b14966859e6fb4af99",
+    url = "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/x86_64/sqlite-libs-3.49.2-r1.apk",
+)
+
+http_file(
+    name = "alpine_aarch64_nspr",
+    downloaded_file_path = "nspr-4.36-r0.tar.gz",
+    sha256 = "60199f8be7f541e56ebd7672518018e8d8dc1b54170663230e94a1d8f5416a5e",
+    url = "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/aarch64/nspr-4.36-r0.apk",
+)
+
+http_file(
+    name = "alpine_aarch64_nss",
+    downloaded_file_path = "nss-3.114-r0.tar.gz",
+    sha256 = "6db73a0a5fef8e0f5f3dc2de7e21a31c9c5d0d1b40f8b785d7af868183345032",
+    url = "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/aarch64/nss-3.114-r0.apk",
+)
+
+http_file(
+    name = "alpine_aarch64_nss_tools",
+    downloaded_file_path = "nss-tools-3.114-r0.tar.gz",
+    sha256 = "e904d91f950d353366f2d9d65086a55bfddb2fdb353025baf4c7e8743f073e3e",
+    url = "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/aarch64/nss-tools-3.114-r0.apk",
+)
+
+http_file(
+    name = "alpine_aarch64_sqlite_libs",
+    downloaded_file_path = "sqlite-libs-3.49.2-r1.tar.gz",
+    sha256 = "204910bcbb13df4d517cb01acb178ebe14f12ff0e55a04b38d1565941780ee29",
+    url = "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/aarch64/sqlite-libs-3.49.2-r1.apk",
+)
+
+# ---------------------------------------------------------------------------
 # e2e tests (//e2e/...): firecracker_k3s_test microVMs from rules_firecracker.
 # Everything a test VM runs is pinned here: it is airgapped.
 # ---------------------------------------------------------------------------

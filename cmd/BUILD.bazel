@@ -63,6 +63,18 @@ go_cross_binary(
     visibility = ["//visibility:public"],
 )
 
+# certutil and its libraries, for the node agent's browser trust stores. Each
+# alpine package file is a layer as is (see the pins in MODULE.bazel).
+NSS_TOOLS_AMD64 = [
+    "@alpine_x86_64_%s//file" % p
+    for p in ("nspr", "sqlite_libs", "nss", "nss_tools")
+]
+
+NSS_TOOLS_ARM64 = [
+    "@alpine_aarch64_%s//file" % p
+    for p in ("nspr", "sqlite_libs", "nss", "nss_tools")
+]
+
 pkg_tar(
     name = "layer_amd64",
     srcs = [":cmd"],
@@ -77,7 +89,7 @@ oci_image(
     name = "weft_operator_image_amd64",
     base = "@alpine_linux_amd64",
     entrypoint = ["/cmd"],
-    tars = [":layer_amd64"],
+    tars = NSS_TOOLS_AMD64 + [":layer_amd64"],
     # The e2e tests preload this image into their microVM.
     visibility = ["//e2e:__subpackages__"],
 )
@@ -86,7 +98,7 @@ oci_image(
     name = "weft_operator_image_arm64",
     base = "@alpine_linux_arm64_v8",
     entrypoint = ["/cmd_arm64"],
-    tars = [":layer_arm64"],
+    tars = NSS_TOOLS_ARM64 + [":layer_arm64"],
 )
 
 oci_image_index(

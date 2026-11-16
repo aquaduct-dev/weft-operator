@@ -8,6 +8,9 @@
 //   - containerd certs.d entries that trust the reflector CA (always present,
 //     except where someone else, e.g. k3s from registries.yaml, owns the
 //     hostname's hosts.toml)
+//   - the reflector CA in every browser NSS database under the node's home
+//     directories (~/.pki/nssdb, Firefox profiles), which ignore the distro
+//     bundle (see nssdb.go)
 //   - an /etc/hosts block mapping the hostnames to the proxy Service IP,
 //     present ONLY while a TLS handshake to that IP verifies for every
 //     hostname. If the proxy goes away the block is withdrawn and pulls fall
@@ -54,6 +57,9 @@ type Config struct {
 	// containerd started. Empty disables that check, so only hostnames
 	// with an agent-owned certs.d entry are pointed at the proxy.
 	HostProc string
+	// NSSHomes are globs matching the node's home directories (as
+	// mounted) to search for browser NSS databases. Empty disables it.
+	NSSHomes []string
 	Interval time.Duration
 }
 
@@ -78,7 +84,7 @@ func Run(args []string) int {
 func parseFlags(args []string) (Config, error) {
 	fs := flag.NewFlagSet("node-agent", flag.ContinueOnError)
 	var cfg Config
-	var hostnames, trustFiles string
+	var hostnames, trustFiles, nssHomes string
 	fs.StringVar(&cfg.Reflector, "reflector", "", "WeftLocalDNSReflector name (tags everything the agent writes)")
 	fs.StringVar(&cfg.ServiceIP, "service-ip", "", "ClusterIP of the reflector proxy Service")
 	fs.StringVar(&hostnames, "hostnames", "", "Comma-separated hostnames to point at the proxy")
@@ -87,6 +93,7 @@ func parseFlags(args []string) (Config, error) {
 	fs.StringVar(&trustFiles, "host-trust-files", "", "Comma-separated host CA bundle files (as mounted) to add the CA to")
 	fs.StringVar(&cfg.CertsDir, "certs-dir", "", "containerd registry config_path (certs.d), mounted at the same path")
 	fs.StringVar(&cfg.HostProc, "host-proc", "", "The host's /proc, mounted read-only, to read containerd's start time")
+	fs.StringVar(&nssHomes, "nss-homes", "", "Comma-separated globs of host home directories (as mounted) whose browser NSS databases get the CA")
 	fs.DurationVar(&cfg.Interval, "interval", 15*time.Second, "How often to health-check the proxy and re-assert node state")
 	if err := fs.Parse(args); err != nil {
 		return cfg, err
@@ -100,6 +107,11 @@ func parseFlags(args []string) (Config, error) {
 	for f := range strings.SplitSeq(trustFiles, ",") {
 		if f = strings.TrimSpace(f); f != "" {
 			cfg.HostTrustFiles = append(cfg.HostTrustFiles, f)
+		}
+	}
+	for g := range strings.SplitSeq(nssHomes, ",") {
+		if g = strings.TrimSpace(g); g != "" {
+			cfg.NSSHomes = append(cfg.NSSHomes, g)
 		}
 	}
 	switch {
@@ -129,6 +141,11 @@ type Agent struct {
 	// untrusted is the last logged set of hostnames held off the proxy
 	// because containerd would not trust it (nil before the first pass).
 	untrusted *string
+	// certutil runs NSS's certutil; nil until found on PATH.
+	certutil        certutilFunc
+	certutilMissing bool
+	// nss is each browser NSS database's state after the last sync.
+	nss map[string]nssState
 }
 
 // NewAgent builds an agent with the real TLS dialer and host /proc reader.
@@ -139,6 +156,7 @@ func NewAgent(cfg Config, logger logr.Logger) *Agent {
 		dialer:          tlsHandshake,
 		containerdStart: func() (time.Time, string, error) { return containerdStart(cfg.HostProc) },
 		now:             time.Now,
+		nss:             map[string]nssState{},
 	}
 }
 
@@ -186,6 +204,7 @@ func (a *Agent) Tick(ctx context.Context) {
 	}
 	a.pruneCertsD()
 	caSince, caOK := a.applyHostTrust(caPEM)
+	a.applyNSSTrust(ctx, caPEM)
 
 	roots := x509.NewCertPool()
 	if !roots.AppendCertsFromPEM(caPEM) {
@@ -394,6 +413,9 @@ func (a *Agent) pruneCertsD() {
 func (a *Agent) Cleanup() error {
 	a.applyHosts(nil)
 	a.applyHostTrust(nil)
+	// The agent's context is already cancelled here; each certutil run
+	// is bounded by certutilTimeout instead.
+	a.applyNSSTrust(context.Background(), nil)
 	var errs []error
 	for _, h := range ownedHostnames(a.cfg.CertsDir, a.cfg.Reflector) {
 		if _, err := removeCertsD(a.cfg.CertsDir, a.cfg.Reflector, h); err != nil {
