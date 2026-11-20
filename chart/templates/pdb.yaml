@@ -1,0 +1,14 @@
+{{- if gt (int .Values.replicaCount) 1 }}
+# Keeps a webhook replica up through node drains (see replicaCount).
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "weft-operator.fullname" . }}
+  labels:
+    {{- include "weft-operator.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "weft-operator.selectorLabels" . | nindent 6 }}
+{{- end }}

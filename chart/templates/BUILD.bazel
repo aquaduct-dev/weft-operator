@@ -18,6 +18,7 @@ exports_files([
     "vpa-controllers.yaml",
     "vpa-certs.yaml",
     "webhook-service.yaml",
+    "pdb.yaml",
 ])
 
 filegroup(

@@ -90,6 +90,15 @@ spec:
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      # Prefer separate nodes, so one node going down never takes out every
+      # webhook replica.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "weft-operator.selectorLabels" . | nindent 14 }}
       {{- with .Values.affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}

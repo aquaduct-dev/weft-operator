@@ -26,6 +26,7 @@ helm_chart(
         "//chart/templates:vpa-controllers.yaml",
         "//chart/templates:vpa-certs.yaml",
         "//chart/templates:webhook-service.yaml",
+        "//chart/templates:pdb.yaml",
         "//api/v1alpha1:generated.crds",
     ],
     upgrade_opts = [

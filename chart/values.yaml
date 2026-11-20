@@ -1,4 +1,9 @@
-replicaCount: 1
+# Two replicas: the controllers are leader-elected, but every replica serves
+# the trust injection webhook, so pods created while one restarts still get
+# the reflector CAs. Under failurePolicy Ignore, a pod admitted with no webhook
+# reachable gets none, and closes every reflector's trust gate until it is
+# restarted.
+replicaCount: 2
 
 image:
   url: {@//cmd:weft_operator_image_push}
@@ -89,7 +94,7 @@ verticalPodAutoscaler:
   # Off: VPA computes a recommendation (visible in `kubectl get vpa`) but does NOT
   # mutate the pod — the operator runs at the static .resources above. This is
   # deliberate: the shared cluster updater runs --min-replicas=2 and refuses to
-  # evict a single-replica pod, so Recreate/Auto can only ever apply on pod
+  # evict a single-replica pod (replicaCount: 1), so Recreate/Auto can only ever apply on pod
   # creation anyway and otherwise leaves a stale injection in place. Off keeps the
   # runtime resources predictable (250Mi/500Mi) while still surfacing the
   # recommendation, which a future operator self-restart loop could act on.
@@ -101,8 +106,8 @@ verticalPodAutoscaler:
 
   updater:
     # Upstream defaults to 2, which makes the updater skip single-replica targets.
-    # weft-operator runs one leader-elected replica, so this must be 1 for Recreate
-    # to act on it. Cluster-wide updater flag.
+    # 1 lets Recreate act on weft-operator when replicaCount is 1. Cluster-wide
+    # updater flag.
     minReplicas: 1
 
   # Pinned VPA component images (registry.k8s.io). Bump in lockstep on upgrade.
