@@ -6,3 +6,6 @@ image:
   url: ghcr.io/aquaduct-dev/weft-operator:e2e
   pullPolicy: Never
 weftImage: ghcr.io/aquaduct-dev/weft:e2e
+# One replica: the scenarios follow a single operator pod (its restarts,
+# metrics and lease). webhook.ha scales to two itself.
+replicaCount: 1

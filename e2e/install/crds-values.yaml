@@ -13,3 +13,6 @@ gatewayClass:
   create: false
 defaultReflector:
   enabled: false
+# One replica: the scenarios follow a single operator pod (its restarts,
+# metrics and lease). webhook.ha scales to two itself.
+replicaCount: 1
