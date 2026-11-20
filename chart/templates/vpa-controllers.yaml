@@ -76,9 +76,9 @@ spec:
           image: {{ .Values.verticalPodAutoscaler.images.updater | quote }}
           imagePullPolicy: IfNotPresent
           # --min-replicas defaults to 2 upstream, which makes the updater skip
-          # single-replica targets (it won't evict the only pod). weft-operator
-          # runs 1 leader-elected replica, so this must be 1 for updateMode: Auto
-          # to actually resize it. This is a cluster-wide updater flag.
+          # single-replica targets (it won't evict the only pod). With
+          # replicaCount: 1, this must be 1 for updateMode: Auto to resize
+          # weft-operator. This is a cluster-wide updater flag.
           args:
             - "--min-replicas={{ .Values.verticalPodAutoscaler.updater.minReplicas }}"
           env:

@@ -88,6 +88,7 @@ func webhookSteps(k *e2ekit.Kit) []e2ekit.Step {
 		{ID: "webhook.dry-run", Label: "a server-side dry run is injected and persists nothing; the webhook logs no on-demand publish for it", Fn: w.checkDryRun},
 		{ID: "webhook.failure-ignore", Label: "with the operator down a pod is admitted uninjected; the trust gate names it and withdraws DNS until it is gone", Fn: w.checkFailureIgnore},
 		{ID: "webhook.restart-stable", Label: "serving certificate Secret and caBundle unchanged across an operator restart; injection still works", Fn: w.checkRestartStable},
+		{ID: "webhook.ha", Label: "with two operator replicas, pods created while one is deleted are all injected", Fn: w.checkHA},
 		{ID: "webhook.foreign-configmap", Label: "an unrelated ConfigMap named weft-trust-bundle is left alone and pods there are not pointed at it", Fn: w.checkForeignConfigMap},
 	}
 }
@@ -499,6 +500,55 @@ func (w *webhookScenario) checkRestartStable(ctx context.Context) error {
 		}
 		return ok, fmt.Sprintf("annotations=%v", pod.Annotations), nil
 	})
+}
+
+// checkHA runs the chart's default two replicas and deletes one: the other
+// keeps serving the webhook, so no pod created meanwhile misses the CA (with
+// failurePolicy Ignore it would be admitted uninjected and close the gate).
+func (w *webhookScenario) checkHA(ctx context.Context) error {
+	if err := w.scaleOperator(ctx, 2); err != nil {
+		return err
+	}
+	pods := &corev1.PodList{}
+	if err := w.k.C.List(ctx, pods, client.InNamespace(e2ekit.OperatorNS), client.MatchingLabels{"app.kubernetes.io/name": "weft-operator"}); err != nil {
+		return err
+	}
+	if len(pods.Items) == 0 {
+		return fmt.Errorf("no operator pods")
+	}
+	victim := pods.Items[0]
+	if err := w.k.C.Delete(ctx, &victim); err != nil {
+		return err
+	}
+	gone := w.k.Gone(&corev1.Pod{}, victim.Namespace, victim.Name)
+	for i := 0; ; i++ {
+		pod := sleeper(workNS, fmt.Sprintf("ha-%d", i))
+		if err := w.k.C.Create(ctx, pod); err != nil {
+			return err
+		}
+		ok := pod.Annotations[injectedAnn] == w.caFP
+		if err := w.deletePod(ctx, pod); err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("pod %s created while %s was deleted was not injected: annotations=%v", pod.Name, victim.Name, pod.Annotations)
+		}
+		done, _, err := gone()
+		if err != nil {
+			return err
+		}
+		if done {
+			log.Printf("%d pods injected while %s went away", i+1, victim.Name)
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+	// Back to one, for the scenarios that follow a single pod.
+	return w.scaleOperator(ctx, 1)
 }
 
 func (w *webhookScenario) checkForeignConfigMap(ctx context.Context) error {
